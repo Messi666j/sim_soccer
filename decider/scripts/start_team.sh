@@ -5,13 +5,13 @@
 mkdir -p logs
 
 # Activate k1 conda environment
-source ~/anaconda3/etc/profile.d/conda.sh
-conda activate k1
+source ~/miniconda3/etc/profile.d/conda.sh
+conda activate k2
 
 # Paths
 DECIDER_DIR="$(dirname "$(dirname "$(readlink -f "$0")")")" # mos-brain/decider
 MOS_BRAIN_DIR="$(dirname "$DECIDER_DIR")"
-CONFIG_FILE="$MOS_BRAIN_DIR/simulation/config/match_config.json"
+CONFIG_FILE="$MOS_BRAIN_DIR/simulation/motrixsim/assets/config/match_config.json"
 DECIDER_SCRIPT="$DECIDER_DIR/decider.py"
 
 echo "Using Match Config: $CONFIG_FILE"
@@ -100,14 +100,14 @@ echo "Launching Blue Team: $BLUE_COUNT robots"
 for ((i=0; i<RED_COUNT; i++)); do
     SESSION_NAME="decider_red_$i"
     echo "Starting $SESSION_NAME..."
-    screen -dmS "$SESSION_NAME" bash -c "python3 $DECIDER_SCRIPT --simulation --color red --id $i; exec bash"
+    screen -dmS "$SESSION_NAME" bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate k2 && python3 $DECIDER_SCRIPT --simulation --color red --id $i; exec bash"
 done
 
 # Launch Blue Team
 for ((i=0; i<BLUE_COUNT; i++)); do
     SESSION_NAME="decider_blue_$i"
     echo "Starting $SESSION_NAME..."
-    screen -dmS "$SESSION_NAME" bash -c "python3 $DECIDER_SCRIPT --simulation --color blue --id $i; exec bash"
+    screen -dmS "$SESSION_NAME" bash -c "source ~/miniconda3/etc/profile.d/conda.sh && conda activate k2 && python3 $DECIDER_SCRIPT --simulation --color blue --id $i; exec bash"
 done
 
 echo "All agents launched in screen sessions."

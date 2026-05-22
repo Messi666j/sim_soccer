@@ -223,6 +223,64 @@ CMD_VEL_NORM_MAX = 1.0
 K1_FULL_BODY_NUM_OBS = 78
 K1_FULL_BODY_NUM_ACT = len(K1_JOINTS_POLICY_ORDER)
 K1_LEGGED_GYM_GAIT_FREQUENCY = 1.5
+# K1 AMP (legged_gym/envs/K1_amp): stacked proprio obs, full-body actions — see legged_gym_1.zip
+K1_AMP_FRAME_STACK = 5
+K1_AMP_NUM_SINGLE_OBS = 75
+K1_AMP_NUM_OBS = K1_AMP_NUM_SINGLE_OBS * K1_AMP_FRAME_STACK
+K1_AMP_NUM_ACT = 22
+K1_AMP_ACTION_SCALE = 0.25
+# Must match K1_22dof.xml <motor> order (training uses enumerate(model.actuators)).
+K1_AMP_ACTUATOR_JOINT_ORDER = [
+    "AAHead_yaw",
+    "Head_pitch",
+    "ALeft_Shoulder_Pitch",
+    "Left_Shoulder_Roll",
+    "Left_Elbow_Pitch",
+    "Left_Elbow_Yaw",
+    "ARight_Shoulder_Pitch",
+    "Right_Shoulder_Roll",
+    "Right_Elbow_Pitch",
+    "Right_Elbow_Yaw",
+    "Left_Hip_Pitch",
+    "Left_Hip_Roll",
+    "Left_Hip_Yaw",
+    "Left_Knee_Pitch",
+    "Left_Ankle_Pitch",
+    "Left_Ankle_Roll",
+    "Right_Hip_Pitch",
+    "Right_Hip_Roll",
+    "Right_Hip_Yaw",
+    "Right_Knee_Pitch",
+    "Right_Ankle_Pitch",
+    "Right_Ankle_Roll",
+]
+K1_AMP_DEFAULT_JOINT_ANGLES = {
+    "AAHead_yaw": 0.0,
+    "Head_pitch": 0.0,
+    "ALeft_Shoulder_Pitch": 0.0,
+    "Left_Shoulder_Roll": -1.3,
+    "Left_Elbow_Pitch": 0.0,
+    "Left_Elbow_Yaw": -0.5,
+    "ARight_Shoulder_Pitch": 0.0,
+    "Right_Shoulder_Roll": 1.3,
+    "Right_Elbow_Pitch": 0.0,
+    "Right_Elbow_Yaw": 0.5,
+    "Left_Hip_Pitch": -0.15,
+    "Left_Hip_Roll": 0.0,
+    "Left_Hip_Yaw": 0.0,
+    "Left_Knee_Pitch": 0.3,
+    "Left_Ankle_Pitch": -0.15,
+    "Left_Ankle_Roll": 0.0,
+    "Right_Hip_Pitch": -0.15,
+    "Right_Hip_Roll": 0.0,
+    "Right_Hip_Yaw": 0.0,
+    "Right_Knee_Pitch": 0.3,
+    "Right_Ankle_Pitch": -0.15,
+    "Right_Ankle_Roll": 0.0,
+}
+K1_AMP_CMD_MAX_LIN_X = 0.5
+K1_AMP_CMD_MAX_LIN_Y = 0.4
+K1_AMP_CMD_MAX_YAW = 1.0
 # Joint order for obs[11:35] and policy actions: must match the order of the *12 leg actuators*
 # in the training MJCF (MotrixSim: same index order as `enumerate(model.actuators)` on the loco model).
 # Soccer `K1_22dof.xml` lists leg <motor> as: full left chain, then full right chain — not L/R interleaved.
@@ -339,6 +397,7 @@ class RobotRuntimeConfig:
     control_decimation: int
     use_k1_legged_gym_policy: bool = False
     k1_stand_policy: Path | None = None
+    use_k1_amp_onnx: bool = False
 
 
 @dataclass
@@ -421,6 +480,33 @@ def infer_k1_pt_policy_io(path: Path) -> tuple[int, int] | None:
     return (int(w0.shape[1]), int(wn.shape[0]))
 
 
+def infer_k1_onnx_io(path: Path) -> tuple[int, int] | None:
+    """Return (obs_dim, act_dim) for a 1-input / 1-output K1 ONNX policy."""
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        return None
+    if not path.is_file() or path.suffix.lower() != ".onnx":
+        return None
+    try:
+        s = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        ins = s.get_inputs()
+        outs = s.get_outputs()
+        if len(ins) != 1 or len(outs) != 1:
+            return None
+        sh = ins[0].shape
+        osh = outs[0].shape
+        if len(sh) < 2 or len(osh) < 2:
+            return None
+        d_in = sh[-1]
+        d_out = osh[-1]
+        if not isinstance(d_in, int) or not isinstance(d_out, int) or d_in <= 0 or d_out <= 0:
+            return None
+        return (d_in, d_out)
+    except Exception:
+        return None
+
+
 def build_robot_runtime_config(
     mujoco_dir: Path,
     *,
@@ -433,16 +519,30 @@ def build_robot_runtime_config(
     if rt == K1_ROBOT_TYPE:
         repo_root = mujoco_dir.parent.parent
         default_pt_policy = mujoco_dir / "assets" / "policies" / "k1_model_46000.pt"
-        # Default legged: repo-root TorchScript (47\u219212), else ONNX under legged_gym.
+        default_legged_onnx_preferred = repo_root / "model_20000_new.onnx"
         default_legged_torch = repo_root / "model_4700.pt"
         default_legged_onnx = repo_root / "legged_gym" / "policy" / "booster_k1" / "model_4700.onnx"
         want_legged = bool(use_k1_legged_gym)
+        use_k1_amp_onnx = False
         policy_path = Path(policy_override) if policy_override is not None else None
 
         if policy_path is not None:
             suf = policy_path.suffix.lower()
             if suf == ".onnx":
-                want_legged = True
+                od = infer_k1_onnx_io(policy_path)
+                if od == (K1_AMP_NUM_OBS, K1_AMP_NUM_ACT):
+                    use_k1_amp_onnx = True
+                    want_legged = False
+                elif od == (K1_LEGGED_GYM_NUM_OBS, K1_LEGGED_GYM_NUM_ACT):
+                    want_legged = True
+                elif od is None:
+                    raise ValueError(f"Cannot read ONNX I/O for {policy_path} (need onnxruntime).")
+                else:
+                    raise ValueError(
+                        f"Unsupported K1 ONNX shape {od[0]}->{od[1]} for {policy_path.name}; "
+                        f"expected {K1_LEGGED_GYM_NUM_OBS}->{K1_LEGGED_GYM_NUM_ACT} (locomotion) or "
+                        f"{K1_AMP_NUM_OBS}->{K1_AMP_NUM_ACT} (K1_amp stack)."
+                    )
             elif suf == ".pt":
                 dims_pt = infer_k1_pt_policy_io(policy_path)
                 if dims_pt == (K1_LEGGED_GYM_NUM_OBS, K1_LEGGED_GYM_NUM_ACT):
@@ -456,24 +556,38 @@ def build_robot_runtime_config(
                     want_legged = False
 
         k1_stand_policy: Path | None = None
-        if want_legged:
+        policy_final: Path | None = None
+        if use_k1_amp_onnx:
+            policy_final = policy_path
+            if policy_final is None or not policy_final.is_file():
+                raise FileNotFoundError("K1 AMP ONNX requires a valid --policy path.")
+        elif want_legged:
             if policy_path is not None:
                 policy_final = policy_path
-            elif default_legged_torch.is_file():
-                policy_final = default_legged_torch
-            elif default_legged_onnx.is_file():
-                policy_final = default_legged_onnx
-            else:
-                print(
-                    "[RobotRuntimeConfig] K1 legged default policy not found: "
-                    f"{default_legged_torch} or {default_legged_onnx}; "
-                    f"falling back to {default_pt_policy.name}"
-                )
-                want_legged = False
-                policy_final = default_pt_policy
-            if want_legged and not policy_final.is_file():
+            elif default_legged_onnx_preferred.is_file():
+                policy_final = default_legged_onnx_preferred
+                od = infer_k1_onnx_io(policy_final)
+                if od == (K1_AMP_NUM_OBS, K1_AMP_NUM_ACT):
+                    use_k1_amp_onnx = True
+                    want_legged = False
+            if not use_k1_amp_onnx:
+                if policy_final is None and default_legged_torch.is_file():
+                    policy_final = default_legged_torch
+                if policy_final is None and default_legged_onnx.is_file():
+                    policy_final = default_legged_onnx
+                if policy_final is None:
+                    print(
+                        "[RobotRuntimeConfig] K1 legged default policy not found: "
+                        f"{default_legged_onnx_preferred} or {default_legged_torch} or {default_legged_onnx}; "
+                        f"falling back to {default_pt_policy.name}"
+                    )
+                    want_legged = False
+                    policy_final = default_pt_policy
+            if use_k1_amp_onnx:
+                k1_stand_policy = None
+            elif want_legged and not policy_final.is_file():
                 raise FileNotFoundError(f"K1 legged policy not found: {policy_final}")
-            if want_legged and default_pt_policy.is_file():
+            if want_legged and not use_k1_amp_onnx and default_pt_policy.is_file():
                 d_stand = infer_k1_pt_policy_io(default_pt_policy)
                 if d_stand == (K1_FULL_BODY_NUM_OBS, K1_FULL_BODY_NUM_ACT):
                     k1_stand_policy = default_pt_policy
@@ -485,6 +599,8 @@ def build_robot_runtime_config(
                     )
         else:
             policy_final = policy_path if policy_path is not None else default_pt_policy
+
+        assert policy_final is not None
         return RobotRuntimeConfig(
             robot_type=K1_ROBOT_TYPE,
             policy=policy_final,
@@ -495,7 +611,7 @@ def build_robot_runtime_config(
             motor_stiffness=K1_MOTOR_STIFFNESS,
             motor_damping=K1_MOTOR_DAMPING,
             reset_joint_pos=K1_RESET_JOINT_POS,
-            include_base_lin_vel_obs=not want_legged,
+            include_base_lin_vel_obs=not want_legged and not use_k1_amp_onnx,
             obs_history_length=1,
             obs_clip=100.0,
             obs_scale=OBS_SCALE,
@@ -503,8 +619,9 @@ def build_robot_runtime_config(
             base_joint_name="world_joint",
             sim_dt=0.005,
             control_decimation=4,
-            use_k1_legged_gym_policy=want_legged,
-            k1_stand_policy=k1_stand_policy,
+            use_k1_legged_gym_policy=want_legged and not use_k1_amp_onnx,
+            k1_stand_policy=None if use_k1_amp_onnx else k1_stand_policy,
+            use_k1_amp_onnx=use_k1_amp_onnx,
         )
     return RobotRuntimeConfig(
         robot_type=PI_PLUS_ROBOT_TYPE,
@@ -534,6 +651,7 @@ def build_robot_runtime_config(
         control_decimation=10,
         use_k1_legged_gym_policy=False,
         k1_stand_policy=None,
+        use_k1_amp_onnx=False,
     )
 
 
@@ -609,7 +727,7 @@ def parse_runtime_args(mujoco_dir: Path) -> RuntimeArgs:
         default=True,
         help="K1 only (default on): 47-dim obs + 12-dim leg policy for locomotion; "
         "when k1_model_46000.pt is present, standstill uses that full-body policy (78->22) with command hysteresis. "
-        "Default walk policy: <repo>/model_4700.pt (TorchScript), else legged_gym/.../model_4700.onnx. "
+        "Default walk policy order: <repo>/model_20000_new.onnx, else model_4700.pt, else legged_gym/.../model_4700.onnx. "
         "Use --no-k1-legged-gym for legacy k1_model_46000.pt only. "
         "--policy overrides walk policy; .pt files are auto-classified (47->12 legged vs 78->22 full body).",
     )

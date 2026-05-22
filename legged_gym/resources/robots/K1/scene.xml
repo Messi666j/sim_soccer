@@ -1,0 +1,14 @@
+<mujoco model="K1-scene">
+  <include file="../../../../../booster_gym/resources/K1/K1_locomotion_modify.xml"/>
+  <include file="../../common/materials.xml"/>
+
+  <worldbody>
+    <light pos="0 0 1.5" dir="0 1 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.01" type="plane" material="motphys-ground"/>
+  </worldbody>
+
+  <sensor>
+    <velocimeter site="imu" name="local_linvel"/>
+    <gyro name="gyro" site="imu" noise="0.005"/>
+  </sensor>
+</mujoco>

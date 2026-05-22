@@ -28,6 +28,15 @@ from .runtime_config import (
     DEFAULT_CMD,
     FIXED_ROBOT_ID_TO_NAME,
     FIXED_ROBOT_NAME_TO_ID,
+    K1_AMP_ACTUATOR_JOINT_ORDER,
+    K1_AMP_CMD_MAX_LIN_X,
+    K1_AMP_CMD_MAX_LIN_Y,
+    K1_AMP_CMD_MAX_YAW,
+    K1_AMP_FRAME_STACK,
+    K1_AMP_NUM_ACT,
+    K1_AMP_NUM_OBS,
+    K1_AMP_NUM_SINGLE_OBS,
+    K1_AMP_ACTION_SCALE,
     K1_FULL_BODY_NUM_ACT,
     K1_FULL_BODY_NUM_OBS,
     K1_LEGGED_GYM_ACTION_SCALE,
@@ -1443,6 +1452,9 @@ class RobotSpec:
     k1_legged_joint_indices: np.ndarray | None = None
     k1_non_leg_mask: np.ndarray | None = None
     k1_gait_phase: float | None = None
+    k1_amp_hist: np.ndarray | None = None
+    k1_amp_last_mjcf: np.ndarray | None = None
+    k1_amp_gather_mjcf: np.ndarray | None = None
 
 
 class MultiRobotMotrixSim:
@@ -1487,6 +1499,7 @@ class MultiRobotMotrixSim:
             keep_robot_sensors=(
                 self.robot_cfg.robot_type == PI_PLUS_ROBOT_TYPE
                 or self.robot_cfg.use_k1_legged_gym_policy
+                or self.robot_cfg.use_k1_amp_onnx
             ),
         )
 
@@ -1541,14 +1554,17 @@ class MultiRobotMotrixSim:
         self._policy_action_dim = 0
         self._init_policy(args.policy)
         self._k1_stand_policy: nn.Module | None = None
-        if self.robot_cfg.k1_stand_policy is not None:
+        if self.robot_cfg.k1_stand_policy is not None and not self.robot_cfg.use_k1_amp_onnx:
             self._init_k1_stand_policy(self.robot_cfg.k1_stand_policy)
 
         self.robot_specs: dict[int, RobotSpec] = self._build_robot_specs()
         self._apply_team_body_colors()
         if self.robot_specs:
             sample_spec = next(iter(self.robot_specs.values()))
-            if self.robot_cfg.use_k1_legged_gym_policy:
+            if self.robot_cfg.use_k1_amp_onnx:
+                expected_obs_dim = K1_AMP_NUM_OBS
+                expected_act_dim = K1_AMP_NUM_ACT
+            elif self.robot_cfg.use_k1_legged_gym_policy:
                 expected_obs_dim = K1_LEGGED_GYM_NUM_OBS
                 expected_act_dim = K1_LEGGED_GYM_NUM_ACT
             else:
@@ -1645,6 +1661,28 @@ class MultiRobotMotrixSim:
 
     def _init_policy(self, policy_path: Path) -> None:
         path = Path(policy_path)
+        if self.robot_cfg.use_k1_amp_onnx:
+            try:
+                import onnxruntime as ort
+            except ImportError as e:
+                raise RuntimeError("Install onnxruntime to run the K1 AMP ONNX policy (pip install onnxruntime).") from e
+            if not path.is_file():
+                raise FileNotFoundError(f"K1 AMP ONNX policy not found: {path}")
+            self._onnx_session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+            ins = self._onnx_session.get_inputs()
+            outs = self._onnx_session.get_outputs()
+            if len(ins) != 1 or len(outs) != 1:
+                raise RuntimeError(f"Expected 1 ONNX input and 1 output; got {len(ins)} / {len(outs)}")
+            self._onnx_input_name = ins[0].name
+            self._onnx_output_name = outs[0].name
+            self._policy_obs_dim = K1_AMP_NUM_OBS
+            self._policy_action_dim = K1_AMP_NUM_ACT
+            self._policy_is_onnx = True
+            print(
+                f"[MultiRobotMotrixSim] K1 AMP ONNX (stacked {K1_AMP_FRAME_STACK}x{K1_AMP_NUM_SINGLE_OBS}): {path} "
+                f"(obs_dim={self._policy_obs_dim}, act_dim={self._policy_action_dim})"
+            )
+            return
         if self.robot_cfg.use_k1_legged_gym_policy:
             suf = path.suffix.lower()
             if suf == ".onnx":
@@ -1782,6 +1820,21 @@ class MultiRobotMotrixSim:
     def _infer_policy_actions(self, obs_batch: np.ndarray) -> np.ndarray:
         if self._policy_is_onnx:
             ob = obs_batch.astype(np.float32, copy=False)
+            b = int(ob.shape[0])
+            in_meta = self._onnx_session.get_inputs()[0]
+            shape0 = in_meta.shape[0] if in_meta.shape else None
+            fixed_b = int(shape0) if isinstance(shape0, int) and shape0 > 0 else None
+            # Many exported AMP checkpoints freeze batch=1; run one row at a time when needed.
+            if fixed_b == 1 and b != 1:
+                outs: list[np.ndarray] = []
+                for i in range(b):
+                    outs.append(
+                        self._onnx_session.run(
+                            [self._onnx_output_name],
+                            {self._onnx_input_name: ob[i : i + 1]},
+                        )[0]
+                    )
+                return np.concatenate(outs, axis=0).astype(np.float32, copy=False)
             return np.asarray(
                 self._onnx_session.run([self._onnx_output_name], {self._onnx_input_name: ob})[0],
                 dtype=np.float32,
@@ -1847,8 +1900,12 @@ class MultiRobotMotrixSim:
         specs: dict[int, RobotSpec] = {}
         joint_names = self.robot_cfg.policy_joint_names
         action_scale = build_action_scale_array(joint_names, self.robot_cfg.action_scale_cfg)
-        if self.robot_cfg.use_k1_legged_gym_policy:
-            obs_step_dim = K1_LEGGED_GYM_NUM_OBS
+        if self.robot_cfg.use_k1_amp_onnx:
+            obs_step_dim = K1_AMP_NUM_OBS
+            obs_history_len = 1
+            obs_dim = K1_AMP_NUM_OBS
+        elif self.robot_cfg.use_k1_legged_gym_policy:
+            obs_step_dim = (9 if self.robot_cfg.include_base_lin_vel_obs else 6) + 3 + 3 * len(joint_names)
             obs_history_len = max(1, int(self.robot_cfg.obs_history_length))
             obs_dim = obs_step_dim * obs_history_len
         else:
@@ -1974,6 +2031,16 @@ class MultiRobotMotrixSim:
                     kp[li] = float(K1_LEGGED_GYM_KP[jn])
                     kd[li] = float(K1_LEGGED_GYM_KD[jn])
                     effort[li] = float(K1_LEGGED_GYM_TORQUE_LIMIT)
+            k1_amp_hist = None
+            k1_amp_last_mjcf = None
+            k1_amp_gather_mjcf = None
+            if self.robot_cfg.use_k1_amp_onnx:
+                k1_amp_gather_mjcf = np.asarray(
+                    [joint_names.index(n) for n in K1_AMP_ACTUATOR_JOINT_ORDER],
+                    dtype=np.int32,
+                )
+                k1_amp_hist = np.zeros((K1_AMP_FRAME_STACK, K1_AMP_NUM_SINGLE_OBS), dtype=np.float32)
+                k1_amp_last_mjcf = np.zeros((K1_AMP_NUM_ACT,), dtype=np.float32)
             specs[rid] = RobotSpec(
                 rid=rid,
                 name=name,
@@ -2013,6 +2080,9 @@ class MultiRobotMotrixSim:
                 k1_legged_joint_indices=k1_legged_joint_indices,
                 k1_non_leg_mask=k1_non_leg_mask,
                 k1_gait_phase=k1_gait_phase,
+                k1_amp_hist=k1_amp_hist,
+                k1_amp_last_mjcf=k1_amp_last_mjcf,
+                k1_amp_gather_mjcf=k1_amp_gather_mjcf,
             )
         return specs
 
@@ -2121,6 +2191,66 @@ class MultiRobotMotrixSim:
         c = float(self.robot_cfg.obs_clip)
         return np.clip(obs, -c, c)
 
+    def _obs_k1_amp(self, spec: RobotSpec, cmd_override: np.ndarray | None = None) -> np.ndarray:
+        """Observation matching legged_gym/envs/K1_amp/K1_amp.py (75 * frame_stack = 375)."""
+        if spec.k1_amp_hist is None or spec.k1_amp_last_mjcf is None or spec.k1_amp_gather_mjcf is None:
+            raise RuntimeError("K1 AMP buffers are not initialized on RobotSpec")
+        qpos = self.data.dof_pos[0]
+        qvel = self.data.dof_vel[0]
+        cmd_src = self.command_buffer[spec.rid] if cmd_override is None else cmd_override
+        cmd_n = np.clip(np.asarray(cmd_src, dtype=np.float32).reshape(3), CMD_VEL_NORM_MIN, CMD_VEL_NORM_MAX)
+        phys = np.array(
+            [
+                float(cmd_n[0]) * float(K1_AMP_CMD_MAX_LIN_X),
+                float(cmd_n[1]) * float(K1_AMP_CMD_MAX_LIN_Y),
+                float(cmd_n[2]) * float(K1_AMP_CMD_MAX_YAW),
+            ],
+            dtype=np.float32,
+        )
+        cmd_obs = phys * np.array([1.0, 1.0, 0.25], dtype=np.float32)
+
+        quat = qpos[spec.base_qpos_adr + 3 : spec.base_qpos_adr + 7]
+        rot_wb = _quat_to_rot_world_from_body(quat)
+        gravity = (rot_wb.T @ np.array([0.0, 0.0, -1.0], dtype=np.float32)).astype(np.float32)
+
+        gyro = None
+        for sname in (f"{spec.name}__angular-velocity", f"{spec.name}__gyro"):
+            try:
+                raw = np.asarray(self.model.get_sensor_value(sname, self.data), dtype=np.float32).reshape(-1)
+                if raw.size >= 3:
+                    gyro = raw[:3].copy()
+                    break
+            except BaseException:
+                continue
+        if gyro is None:
+            base_ang_world = qvel[spec.base_qvel_adr + 3 : spec.base_qvel_adr + 6]
+            gyro = (rot_wb.T @ base_ang_world.astype(np.float32)).astype(np.float32)
+        gyro_scaled = gyro.astype(np.float32) * 0.25
+
+        q_j = qpos[spec.qpos_idx].astype(np.float32)
+        dq_j = qvel[spec.qvel_idx].astype(np.float32)
+        gather = spec.k1_amp_gather_mjcf
+        q_mjcf = q_j[gather]
+        dq_mjcf = dq_j[gather]
+        default_mjcf = spec.init_angles[gather]
+        diff = (q_mjcf - default_mjcf) * 1.0
+        dvel = dq_mjcf * 0.05
+
+        single = np.zeros((K1_AMP_NUM_SINGLE_OBS,), dtype=np.float32)
+        single[0:3] = cmd_obs
+        single[3:6] = gravity
+        single[6:9] = gyro_scaled
+        single[9:31] = diff
+        single[31:53] = dvel
+        single[53:75] = spec.k1_amp_last_mjcf
+
+        hist = spec.k1_amp_hist
+        hist[:-1] = hist[1:].copy()
+        hist[-1] = single
+        flat = hist.reshape(-1)
+        c = float(self.robot_cfg.obs_clip)
+        return np.clip(np.nan_to_num(flat, nan=0.0, posinf=0.0, neginf=0.0), -c, c)
+
     def _obs_for_robot(self, spec: RobotSpec, cmd_override: np.ndarray | None = None) -> np.ndarray:
         if self.robot_cfg.use_k1_legged_gym_policy:
             return self._obs_k1_legged_gym(spec, cmd_override=cmd_override)
@@ -2217,6 +2347,10 @@ class MultiRobotMotrixSim:
                 spec.last_action[:] = 0.0
                 if spec.k1_legged_last_action is not None:
                     spec.k1_legged_last_action[:] = 0.0
+                if spec.k1_amp_last_mjcf is not None:
+                    spec.k1_amp_last_mjcf[:] = 0.0
+                if spec.k1_amp_hist is not None:
+                    spec.k1_amp_hist.fill(0.0)
                 spec.k1_hybrid_walking = False
                 spec.filtered_dof_target[:] = spec.init_angles
                 spec.target_joint_pos[:] = spec.init_angles
@@ -2250,6 +2384,9 @@ class MultiRobotMotrixSim:
                 else:
                     o = self._obs_k1_fullbody_for_hybrid(spec, cmd_override=cmd_ov)
                     stand_obs.append(o)
+            elif self.robot_cfg.use_k1_amp_onnx:
+                o = self._obs_k1_amp(spec, cmd_override=cmd_ov)
+                walk_obs.append(o)
             elif self.robot_cfg.use_k1_legged_gym_policy:
                 o = self._obs_k1_legged_gym(spec, cmd_override=cmd_ov)
                 walk_obs.append(o)
@@ -2290,6 +2427,35 @@ class MultiRobotMotrixSim:
                 if spec.rid == debug_rid:
                     debug_obs = debug_obs_list[i].copy()
                     debug_act = act.copy()
+                if self.robot_cfg.use_k1_amp_onnx:
+                    act_mjcf = act.astype(np.float32, copy=False).reshape(K1_AMP_NUM_ACT)
+                    if spec.k1_amp_last_mjcf is not None:
+                        spec.k1_amp_last_mjcf[:] = act_mjcf
+                    pol_to_mjcf = np.asarray(
+                        [K1_AMP_ACTUATOR_JOINT_ORDER.index(n) for n in self.robot_cfg.policy_joint_names],
+                        dtype=np.int64,
+                    )
+                    act_pol = act_mjcf[pol_to_mjcf]
+                    spec.last_action[:] = act_pol
+                    delta = np.clip(
+                        act_pol * float(K1_AMP_ACTION_SCALE),
+                        ACTION_CLIP[0],
+                        ACTION_CLIP[1],
+                    )
+                    joint_pos_action = spec.init_angles + delta
+                    if ACTION_SMOOTH_FILTER:
+                        spec.filtered_dof_target[:] = spec.filtered_dof_target * 0.2 + joint_pos_action * 0.8
+                    else:
+                        spec.filtered_dof_target[:] = joint_pos_action
+                    if spec.joint_lower is not None and spec.joint_upper is not None:
+                        np.clip(
+                            spec.filtered_dof_target,
+                            spec.joint_lower,
+                            spec.joint_upper,
+                            out=spec.filtered_dof_target,
+                        )
+                    spec.target_joint_pos[:] = spec.filtered_dof_target
+                    continue
                 if self.robot_cfg.use_k1_legged_gym_policy:
                     if hybrid_stand:
                         spec.last_action[:] = act
@@ -2778,6 +2944,10 @@ class MultiRobotMotrixSim:
                 spec.k1_legged_last_action[:] = 0.0
             if spec.k1_gait_phase is not None:
                 spec.k1_gait_phase = 0.0
+            if spec.k1_amp_last_mjcf is not None:
+                spec.k1_amp_last_mjcf[:] = 0.0
+            if spec.k1_amp_hist is not None:
+                spec.k1_amp_hist.fill(0.0)
             spec.k1_hybrid_walking = False
             spec.filtered_dof_target[:] = spec.init_angles
             spec.target_joint_pos[:] = spec.init_angles

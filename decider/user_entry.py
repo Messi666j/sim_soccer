@@ -47,9 +47,10 @@ class AdvancedDribbler:
     def __init__(self, agent):
         self.agent = agent
         self.logger = agent.get_logger().get_child("AdvDribble")
-        
-        # Instrumentation
-        # Use project-relative debug_logs directory (parent of `decider`)
+
+        # Instrumentation (throttled: only log every LOG_EVERY_N frames to avoid I/O bottleneck)
+        self._frame_count = 0
+        self.LOG_EVERY_N = 100
         log_dir = os.path.abspath(os.path.join(CUR_DIR, '..', 'debug_logs'))
         print(f"[DEBUG] DataRecorder log_dir: {log_dir}")
         self.recorder = DataRecorder(log_dir)
@@ -132,6 +133,9 @@ class AdvancedDribbler:
         return target_vec, is_safe
 
     def run(self):
+        self._frame_count += 1
+        log_this_frame = (self._frame_count % self.LOG_EVERY_N == 0)
+
         if not self.agent.get_if_ball():
             self.logger.info("Lost ball, stopping.")
             self.agent.cmd_vel(0,0,0)
@@ -197,7 +201,8 @@ class AdvancedDribbler:
                 "aligned": 0, "safe_zone": 0,
                 "err_y": 0, "err_x": 0
             }
-            self.recorder.log(log_data)
+            if log_this_frame:
+                self.recorder.log(log_data)
             return  # Exit early, don't do normal dribble logic
         
         # Target Vector
@@ -364,8 +369,9 @@ class AdvancedDribbler:
             "err_y": err_y,
             "err_x": err_x
         }
-        self.recorder.log(log_data)
-        
+        if log_this_frame:
+            self.recorder.log(log_data)
+
         # 3. Final Command
         self.logger.info(f"[AdvDribble] Safe:{is_safe_zone} Alg:{aligned} T_Ang:{target_angle_deg:.1f} Cmd:({cmd_x:.2f}, {cmd_y:.2f}, {da:.2f})")
         self.agent.cmd_vel(cmd_x, cmd_y, da)
@@ -411,12 +417,13 @@ def game(agent) -> None:
     # # --- Debug Coordinates ---
     # from debug_coords import debug_coords
     # debug_coords(agent)
-    
+
     # --- Select Test to Run ---
-    # _playing_logic(agent)        # Default: Full Playing Logic
-    # _test_adv_dribble(agent)     # TEST ARGUMENT: Using Advanced Dribble
-    # _playing_logic(agent)
-    _gc_test_go_back_to_field(agent)
+    # _playing_logic(agent)            # 简化逻辑: 找球→追球→运球 (无需裁判)
+    # _test_adv_dribble(agent)         # 测试: 只做 adv_dribble
+    # _gc_test_go_back_to_field(agent) # 旧版: GC + 全队追球
+
+    _mvp_game(agent)                   # MVP: GC状态机 + 角色分工（新增；（claude code 生成））
 
 def _gc_test_go_back_to_field(agent):
     """
@@ -511,3 +518,92 @@ def _test_chase_ball(agent) -> None:
         agent.state_machine_runners['find_ball']()
     else:
         agent.state_machine_runners['chase_ball']()
+
+
+# =====================================================================
+# MVP 完整闭环: GameController 状态机 + 角色分工 （claude code 生成）
+# =====================================================================
+
+def _is_goalkeeper(agent) -> bool:
+    """判断当前机器人是否为守门员。
+
+    约定: 每队第 0 号机器人为守门员。
+    蓝队 ID 会被 SimAgent 自动加上 red_count 偏移量,
+    因此用 config 中的原始 id 判断, 两队守门员都正确:
+      红队: config.id == 0  →  守门员  (agent.id == 0)
+      蓝队: config.id == 0  →  守门员  (agent.id == 3, 偏移后)
+    """
+    try:
+        return int(agent._config.get("id", -1)) == 0
+    except Exception:
+        return False
+
+
+def _mvp_game(agent) -> None:
+    """MVP 比赛主循环: 完整的感知→决策→执行闭环。
+
+    复用已有 _gc_test_go_back_to_field 的 GC 状态处理模式,
+    在 STATE_PLAYING 中增加角色分发:
+      - 守门员 → goalkeeper 状态机
+      - 场上球员 → 找球 → 追球 → 运球射门 (复用 _playing_logic)
+    其余状态 (INITIAL/READY/SET/FINISHED/STANDBY) 保持不变。
+    """
+    gc = agent.gamecontroller
+    state = gc.game_state
+    logger = agent.get_logger()
+
+    # ---- STATE_INITIAL / STATE_READY: 走到开球站位 ----
+    if state in ("STATE_INITIAL", "STATE_READY"):
+        _mvp_go_to_kickoff(agent)
+        return
+
+    # ---- STATE_SET: 裁判吹哨前原地静止 ----
+    if state == "STATE_SET":
+        agent.stop()
+        return
+
+    # ---- STATE_FINISHED / STATE_STANDBY: 比赛结束/暂停 ----
+    if state in ("STATE_FINISHED", "STATE_STANDBY"):
+        agent.stop()
+        return
+
+    # ---- STATE_PLAYING: 按角色执行不同策略 ----
+    if state == "STATE_PLAYING":
+        if _is_goalkeeper(agent):
+            agent.state_machine_runners["goalkeeper"]()
+        else:
+            _playing_logic(agent)
+        return
+
+    logger.warning(f"[MVP] Unknown state: {state} -> stop")
+    agent.stop()
+
+
+def _mvp_go_to_kickoff(agent) -> None:
+    """开球前按角色走到不同站位 (复用已有的 go_back_to_field 状态机)。
+
+    坐标系 (红蓝镜像后通用):
+      X+ = 对方球门方向
+      我方球门在 X ≈ -7.0 (FIELD_LENGTH / 2 = 7.0)
+    """
+    player_id = int(agent._config.get("id", 0))
+
+    if _is_goalkeeper(agent):
+        # 守门员: 站球门前约 1m, 面朝对方球门
+        agent.state_machine_runners["go_back_to_field"](
+            aim_x=-6.0, aim_y=0.0, aim_yaw=90.0
+        )
+    elif player_id == 1:
+        agent.state_machine_runners["go_back_to_field"](
+            aim_x=-3.0, aim_y=-2.0, aim_yaw=90.0
+        )
+    elif player_id == 2:
+        agent.state_machine_runners["go_back_to_field"](
+            aim_x=-3.0, aim_y=2.0, aim_yaw=90.0
+        )
+    else:
+        # 更多球员: 中圈一字排开
+        offset = float(player_id - 1) * 1.5 - 2.0
+        agent.state_machine_runners["go_back_to_field"](
+            aim_x=-3.0, aim_y=offset, aim_yaw=90.0
+        )

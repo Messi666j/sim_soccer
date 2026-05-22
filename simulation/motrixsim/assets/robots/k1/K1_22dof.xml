@@ -1,7 +1,7 @@
 <mujoco model="K1">
   <compiler angle="radian" meshdir="meshes/" autolimits="true"/>
 
-  <option timestep="0.001" tolerance="1e-6" impratio="10" solver="Newton"/>
+  <option timestep="0.01" tolerance="1e-6" impratio="10" solver="Newton"/>
   <default>
     <geom solimp="0.90 0.95 0.001" solref="0.001 1"/>
   </default>
