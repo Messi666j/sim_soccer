@@ -1,0 +1,41 @@
+volumes:
+  motrixlab-data:
+    name: motrixlab-data
+
+services:
+  motrixlab-training:
+    image: motphys/motrixlab:latest
+    container_name: motrixlab-training
+    volumes:
+      - motrixlab-data:/root/motrixlab/runs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - scripts/train.py
+      - --train-backend
+      - ${MOTRIX_TRAIN_BACKEND:-jax}
+      - --num-envs
+      - ${MOTRIX_NUM_ENVS:-2048}
+      - --env
+      - ${MOTRIX_ENV:-cartpole}
+    restart: no
+
+  motrixlab-tensorboard:
+    image: motphys/motrixlab:latest
+    container_name: motrixlab-tensorboard
+    ports:
+      - "6006:6006"
+    volumes:
+      - motrixlab-data:/root/motrixlab/runs:ro
+    command:
+      - tensorboard
+      - --host
+      - 0.0.0.0
+      - --logdir
+      - runs/${MOTRIX_ENV:-cartpole}
+    restart: unless-stopped

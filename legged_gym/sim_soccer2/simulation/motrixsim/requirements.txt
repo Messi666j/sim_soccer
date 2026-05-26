@@ -1,0 +1,10 @@
+# MotrixSim soccer stack (see https://github.com/Motphys/motrixsim-docs / https://motrixsim.readthedocs.io)
+motrixsim>=0.7.0
+numpy>=1.23
+torch>=2.0
+zmq
+flask
+flask-socketio
+pillow
+fastapi
+uvicorn

@@ -1,0 +1,6 @@
+flask
+flask_socketio
+numpy
+gym
+PIL
+setuptools

@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mujoco Sim Manager</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f4f6f8; color: #1f2937; }
+    .page { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { background: #fff; border: 1px solid #d9dee5; border-radius: 10px; padding: 16px; flex: 1; min-width: 320px; }
+    h1 { margin: 0 0 12px; font-size: 24px; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    label { display: block; font-size: 13px; margin: 4px 0 10px; color: #374151; line-height: 1.35; }
+    label input, label select { margin-top: 6px; }
+    input, select { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #cfd6df; border-radius: 6px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+    .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    button { border: 0; border-radius: 6px; padding: 9px 12px; cursor: pointer; color: #fff; background: #2563eb; }
+    button.secondary { background: #4b5563; }
+    button.danger { background: #dc2626; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 8px 6px; text-align: left; vertical-align: top; }
+    .sim-table .webview-col { width: 140px; white-space: nowrap; }
+    .sim-table .port-col { width: 110px; white-space: nowrap; }
+    .sim-table .team-col { width: 95px; white-space: nowrap; }
+    .status { margin-top: 8px; font-size: 13px; color: #374151; white-space: pre-wrap; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; min-height: 56px; }
+    .status-title { margin-top: 8px; margin-bottom: 4px; font-size: 12px; font-weight: 700; color: #4b5563; }
+    .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 10px; }
+    .link { color: #2563eb; text-decoration: none; font-size: 14px; }
+    .cmd-box { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #fbfcfd; margin-top: 8px; }
+    .cmd-row { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; }
+    .cmd-row code { flex: 1; padding: 6px 8px; font-size: 12px; background: #f3f4f6; border-radius: 6px; word-break: break-all; }
+    .copy-btn { background: #2563eb; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <h1>Sim Manager</h1>
+      <a class="link" href="/manager/docs" target="_blank">API Docs Page</a>
+    </div>
+
+    <div class="row">
+      <div class="card">
+        <h2>Start Simulation</h2>
+        <div class="grid">
+          <label>team_size
+            <input id="team_size" type="number" min="0" max="7" value="1" />
+          </label>
+          <label>robot_type
+            <select id="robot_type"><option value="k1" selected>k1</option><option value="pi_plus">pi_plus</option></select>
+          </label>
+          <label>zmq_port
+            <input id="zmq_port" type="number" min="1" max="65535" placeholder="auto (default from 5555)" />
+          </label>
+          <label>webview_port
+            <input id="webview_port" type="number" min="1" max="65535" placeholder="auto (default from 5811)" />
+          </label>
+          <label>web_fps
+            <input id="web_fps" type="number" min="1" max="120" value="20" />
+          </label>
+          <label>web_width
+            <input id="web_width" type="number" min="64" max="8192" value="1280" />
+          </label>
+          <label>web_height
+            <input id="web_height" type="number" min="64" max="8192" value="720" />
+          </label>
+          <label>webview
+            <select id="webview"><option value="true" selected>true</option><option value="false">false</option></select>
+          </label>
+          <label>zmq
+            <select id="zmq"><option value="true" selected>true</option><option value="false">false</option></select>
+          </label>
+          <label>use_referee
+            <select id="use_referee"><option value="false" selected>false</option><option value="true">true</option></select>
+          </label>
+          <label>allow_keyboard_control
+            <select id="allow_keyboard_control"><option value="false" selected>false</option><option value="true">true</option></select>
+          </label>
+          <label>policy_device
+            <select id="policy_device"><option value="gpu" selected>gpu</option><option value="cpu">cpu</option></select>
+          </label>
+        </div>
+        <div class="actions">
+          <button onclick="startSim()">Start</button>
+          <button class="secondary" onclick="scanSims()">Refresh</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Process Control</h2>
+        <label>Select PID (scanned)
+          <select id="stop_pid_select" onchange="renderDeciderCommands()">
+            <option value="">-- choose pid --</option>
+          </select>
+        </label>
+        <label>Or input PID manually
+          <input id="stop_pid" type="number" placeholder="e.g. 12345" />
+        </label>
+        <div class="actions">
+          <button class="danger" onclick="stopPid()">Stop PID</button>
+          <button class="danger" onclick="stopAll()">Stop All</button>
+        </div>
+        <details id="decider_cmds_panel" class="cmd-box">
+          <summary>Decider Commands</summary>
+          <div id="decider_cmds_content" style="margin-top:8px; font-size: 12px; color:#4b5563;">Select a PID to generate commands.</div>
+        </details>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h2>Scanned Sim Processes</h2>
+      <table class="sim-table">
+        <thead>
+          <tr><th>PID</th><th>Managed</th><th>SIM ID</th><th>Robot</th><th class="port-col">ZMQ Port</th><th class="team-col">Team Size</th><th class="webview-col">WebView</th></tr>
+        </thead>
+        <tbody id="sim_table_body"></tbody>
+      </table>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h2>Logs</h2>
+      <div class="status-title">Start Log</div>
+      <div id="start_status" class="status"></div>
+      <div class="status-title">Action Log</div>
+      <div id="stop_status" class="status"></div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <details open>
+        <summary style="cursor:pointer; font-weight:700;">Usage Guide</summary>
+        <div style="margin-top:10px; font-size:13px; color:#374151; line-height:1.6;">
+          <div>1. 在 <b>Start Simulation</b> 设置参数后点击 <b>Start</b>。端口可留空，系统会自动分配。</div>
+          <div>2. 点击 <b>Refresh</b> 或等待自动刷新，在 <b>Scanned Sim Processes</b> 查看进程、ZMQ 端口、队伍人数与 WebView 链接（链接使用当前页面的主机名；若用 SSH 只转发了 Manager 端口，请同时转发 WebView 端口，例如 <code>ssh -L 8000:127.0.0.1:8000 -L 5811:127.0.0.1:5811 ...</code>）。</div>
+          <div>3. 在 <b>Process Control</b> 选择 PID 后，点击 <b>Stop PID</b> 可停止单个仿真；点击 <b>Stop All</b> 可停止全部仿真。</div>
+          <div>4. 选择 PID 后展开 <b>Decider Commands</b>，可复制每个机器人的 decider 启动命令。</div>
+          <div>5. 页面底部 <b>Logs</b> 会显示启动和停止操作结果。</div>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    let scannedRowsByPid = {};
+
+    async function req(url, method = "GET", body = null) {
+      const opt = { method, headers: { "Content-Type": "application/json" } };
+      if (body !== null) opt.body = JSON.stringify(body);
+      const r = await fetch(url, opt);
+      const j = await r.json();
+      if (!r.ok) throw new Error(JSON.stringify(j));
+      return j;
+    }
+
+    function setText(id, value) {
+      document.getElementById(id).textContent = typeof value === "string" ? value : JSON.stringify(value, null, 2);
+    }
+
+    function copyText(v) {
+      navigator.clipboard.writeText(v).catch(() => {});
+    }
+
+    function renderDeciderCommands() {
+      const select = document.getElementById("stop_pid_select");
+      const content = document.getElementById("decider_cmds_content");
+      const panel = document.getElementById("decider_cmds_panel");
+      const pid = (select.value || "").trim();
+      if (!pid || !scannedRowsByPid[pid]) {
+        content.textContent = "Select a PID to generate commands.";
+        return;
+      }
+      const row = scannedRowsByPid[pid];
+      const teamSize = Number.isFinite(row.team_size) ? row.team_size : 0;
+      const port = Number.isFinite(row.zmq_port) ? row.zmq_port : 5555;
+      let html = '<div>Run from mos-brain root directory.</div>';
+      for (let i = 0; i < teamSize; i++) {
+        const redCmd = `python decider/decider.py --simulation --ip 127.0.0.1 --port ${port} --color red --id ${i}`;
+        const blueCmd = `python decider/decider.py --simulation --ip 127.0.0.1 --port ${port} --color blue --id ${i}`;
+        html += `<div class="cmd-row"><span>R${i}</span><code>${redCmd}</code><button class="copy-btn" onclick="copyText('${redCmd.replaceAll("'", "\\'")}')">Copy</button></div>`;
+        html += `<div class="cmd-row"><span>B${i}</span><code>${blueCmd}</code><button class="copy-btn" onclick="copyText('${blueCmd.replaceAll("'", "\\'")}')">Copy</button></div>`;
+      }
+      if (teamSize <= 0) {
+        html += "<div>No active robot in this sim.</div>";
+      }
+      content.innerHTML = html;
+      panel.open = true;
+    }
+
+    async function startSim() {
+      try {
+        const parseOptionalInt = (id) => {
+          const raw = (document.getElementById(id).value || "").trim();
+          if (raw === "") return null;
+          const v = parseInt(raw, 10);
+          return Number.isFinite(v) ? v : null;
+        };
+        const payload = {
+          team_size: parseInt(document.getElementById("team_size").value || "1"),
+          robot_type: document.getElementById("robot_type").value || "k1",
+          zmq_port: parseOptionalInt("zmq_port"),
+          webview_port: parseOptionalInt("webview_port"),
+          web_fps: parseInt(document.getElementById("web_fps").value || "20"),
+          web_width: parseInt(document.getElementById("web_width").value || "1280"),
+          web_height: parseInt(document.getElementById("web_height").value || "720"),
+          policy_device: document.getElementById("policy_device").value || "gpu",
+          webview: document.getElementById("webview").value === "true",
+          zmq: document.getElementById("zmq").value === "true",
+          use_referee: document.getElementById("use_referee").value === "true",
+          allow_keyboard_control: document.getElementById("allow_keyboard_control").value === "true"
+        };
+        const res = await req("/sims/start", "POST", payload);
+        setText("start_status", res);
+        await scanSims();
+      } catch (e) {
+        setText("start_status", String(e));
+      }
+    }
+
+    async function stopPid() {
+      try {
+        const selected = (document.getElementById("stop_pid_select").value || "").trim();
+        const manual = (document.getElementById("stop_pid").value || "").trim();
+        const pidRaw = selected !== "" ? selected : manual;
+        const pid = parseInt(pidRaw || "0");
+        const res = await req("/sims/stop", "POST", { pid });
+        setText("stop_status", res);
+        await scanSims();
+      } catch (e) {
+        setText("stop_status", String(e));
+      }
+    }
+
+    async function stopAll() {
+      try {
+        const res = await req("/sims/stop-all", "POST", {});
+        setText("stop_status", res);
+        await scanSims();
+      } catch (e) {
+        setText("stop_status", String(e));
+      }
+    }
+
+    async function scanSims() {
+      try {
+        const res = await req("/sims");
+        const tbody = document.getElementById("sim_table_body");
+        const select = document.getElementById("stop_pid_select");
+        const prevSelected = (select.value || "").trim();
+        tbody.innerHTML = "";
+        select.innerHTML = '<option value="">-- choose pid --</option>';
+        scannedRowsByPid = {};
+        const managedByPid = {};
+        for (const m of (res.managed || [])) {
+          managedByPid[m.pid] = m;
+        }
+        const parseWebviewPortFromCmd = (cmd) => {
+          if (!cmd || cmd.includes("--no-webview")) return null;
+          const m = cmd.match(/--webview-port\s+(\d+)/);
+          if (m) return parseInt(m[1], 10);
+          return 5811;
+        };
+        for (const row of res.scanned || []) {
+          scannedRowsByPid[String(row.pid)] = row;
+          const opt = document.createElement("option");
+          opt.value = String(row.pid);
+          opt.textContent = `${row.pid} (${row.managed ? "managed" : "external"})`;
+          select.appendChild(opt);
+
+          const managedMeta = managedByPid[row.pid] || null;
+          const webviewPort = managedMeta && Number.isFinite(managedMeta.webview_port)
+            ? managedMeta.webview_port
+            : parseWebviewPortFromCmd(row.cmd);
+          // Use the same host as this manager page. Hardcoding 127.0.0.1 breaks remote/LAN access
+          // (the browser would open the viewer on the client machine, not the sim host).
+          const webHost = window.location.hostname || "127.0.0.1";
+          const webProto = window.location.protocol === "https:" ? "https:" : "http:";
+          const webviewCell = webviewPort
+            ? `<a class="link" href="${webProto}//${webHost}:${webviewPort}" target="_blank">open :${webviewPort}</a>`
+            : "-";
+          const zmqPortCell = Number.isFinite(row.zmq_port) ? row.zmq_port : "-";
+          const teamSizeCell = Number.isFinite(row.team_size) ? row.team_size : "-";
+          const robotTypeCell = row.robot_type || "k1";
+          const tr = document.createElement("tr");
+          tr.innerHTML = `<td>${row.pid}</td><td>${row.managed ? "yes" : "no"}</td><td>${row.sim_id || "-"}</td><td>${robotTypeCell}</td><td class="port-col">${zmqPortCell}</td><td class="team-col">${teamSizeCell}</td><td class="webview-col">${webviewCell}</td>`;
+          tbody.appendChild(tr);
+        }
+        if (prevSelected !== "" && Array.from(select.options).some(o => o.value === prevSelected)) {
+          select.value = prevSelected;
+        }
+        renderDeciderCommands();
+      } catch (e) {
+        setText("stop_status", String(e));
+      }
+    }
+
+    scanSims();
+  </script>
+</body>
+</html>

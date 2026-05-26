@@ -1,0 +1,1825 @@
+<!DOCTYPE html>
+<!--
+  Attribution:
+  This file is rewritten/adapted from simulation/labWebView related frontend files.
+  Upstream project: https://github.com/Renforce-Dynamics/labWebView/
+  Upstream license status: no explicit license found at integration time.
+  See: /mujoco/web/templates/THIRD_PARTY_NOTICE.md and /THIRD_PARTY_NOTICES.md
+-->
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gym Environment Render</title>
+    <script src="https://cdn.socket.io/4.3.2/socket.io.min.js"></script>
+</head>
+
+<body>
+    <div class="top-scoreboard">
+        <div id="referee-panel" class="referee-panel" style="display: none;">
+            <div class="referee-title">Referee</div>
+            <div class="referee-grid">
+                <div class="referee-row"><span>State</span><strong id="ref-state">-</strong></div>
+                <div class="referee-row"><span>Set Play</span><strong id="ref-set-play">-</strong></div>
+                <div class="referee-row"><span>Kicking</span><strong id="ref-kicking-team">-</strong></div>
+                <div class="referee-row"><span>Time Left</span><strong id="ref-time-left">-</strong></div>
+                <div class="referee-row"><span>Score</span><strong id="ref-score">-</strong></div>
+            </div>
+        </div>
+    </div>
+    <div class="main-container">
+        <!-- Left Panel: Video -->
+        <div class="left-panel">
+            <div id="video-container">
+                <img id="video" src="" alt="Video Feed" />
+            </div>
+            <div style="text-align: center; color: #555;">
+                <p>Socket.IO: <span id="status">connecting...</span></p>
+                <p style="font-size: 12px; margin-top: -8px;">
+                    FPS: <span id="fps-value">0.0</span> |
+                    Source: <span id="fps-source">-</span>
+                </p>
+                <p style="font-size: 12px; margin-top: -8px;">
+                    Last Msg: <span id="msg-time">-</span> |
+                    ID: <span id="msg-id">-</span> |
+                    Src: <span id="msg-src">-</span>
+                </p>
+            </div>
+        </div>
+
+        <!-- Right Panel: Controls -->
+        <div class="right-panel">
+
+            <!-- Minimap First for easy access -->
+            <div class="control-section">
+                <h3>Interactive Map</h3>
+                <p style="font-size: 12px; margin-top: -8px;">Drag entities to teleport</p>
+                <div class="control-row" style="justify-content: center;">
+                    <canvas id="minimap" width="400" height="250"></canvas>
+                </div>
+                <div id="drag-debug" style="font-size:11px;color:#555;text-align:center;margin-top:4px;">
+                    drag debug: idle
+                </div>
+                <div class="control-row" style="font-size: 12px;">
+                    <p><strong>Legend:</strong> ⚪Ball, 🔴Red, 🔵Blue</p>
+                </div>
+                <div class="control-row" style="font-size: 12px; margin-top: 5px;">
+                    <label><input type="checkbox" id="sync-from-sim" checked> Sync positions from sim</label>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Camera Views</h3>
+                <div class="control-row" style="flex-wrap: wrap;">
+                    <button class="button" onclick="sendCameraPreset('Top')">Top</button>
+                    <button class="button" onclick="sendCameraPreset('Side')">Side</button>
+                    <button class="button" onclick="sendCameraPreset('Diagonal')">Diag</button>
+                    <button class="button" onclick="sendCameraPreset('Goal_Left')">L-Goal</button>
+                    <button class="button" onclick="sendCameraPreset('Goal_Right')">R-Goal</button>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Match Settings</h3>
+                <div class="control-row">
+                    <label>Red:</label> <span id="red-count" style="font-weight: 600;">-</span>
+                    <label>Blue:</label> <span id="blue-count" style="font-weight: 600;">-</span>
+                    <span style="font-size: 11px; color: #999;">(Read-only)</span>
+                </div>
+                <div class="control-row" style="margin-top: 5px;">
+                    <button class="button" onclick="setSpawnPoints()"
+                        title="Set current map positions as spawn points (will apply on Reset)">Set Spawn
+                        Points</button>
+                    <button class="button" onclick="sendResetEnv()"
+                        title="Respawn robots and ball without resetting referee state"
+                        style="background-color: #28a745;">Reset</button>
+                    <button id="restart-match-btn" class="button" onclick="sendRestartMatch()"
+                        title="Restart match: reset referee, robots, and ball"
+                        style="background-color: #dc3545; display: none;">Restart Match</button>
+                </div>
+                <div id="spawn-status" style="font-size: 11px; color: #666; margin-top: 5px;"></div>
+                <script>
+                    let savedSpawnPositions = {};
+
+                    function setSpawnPoints() {
+                        savedSpawnPositions = {};
+                        let redCount = 0;
+                        let blueCount = 0;
+                        entities.forEach(ent => {
+                            if (ent.name === 'ball') {
+                                savedSpawnPositions[ent.name] = [ent.x, ent.y, ent.theta || 0];
+                                return;
+                            }
+                            if (ent.active) {
+                                savedSpawnPositions[ent.name] = [ent.x, ent.y, ent.theta || 0];
+                                if (ent.team === 'red') redCount += 1;
+                                if (ent.team === 'blue') blueCount += 1;
+                            }
+                        });
+                        // Send to backend for storage
+                        emitControl('set_initial_positions', savedSpawnPositions);
+                        document.getElementById('spawn-status').textContent =
+                            `✓ Saved ${Object.keys(savedSpawnPositions).length} spawn points (${redCount}v${blueCount})`;
+                    }
+                </script>
+            </div>
+
+            <div class="control-section">
+                <h3>Referee Control</h3>
+                <div class="control-row" style="flex-wrap: wrap;">
+                    <button class="button" onclick="sendRefereeCommand('ready')"
+                        title="Set referee state to READY">Ready</button>
+                    <button class="button" onclick="sendRefereeCommand('set')"
+                        title="Set referee state to SET">Set</button>
+                    <button class="button" onclick="sendRefereeCommand('play')"
+                        title="Set referee state to PLAYING">Play</button>
+                    <button class="button" onclick="sendRefereeCommand('finish')"
+                        title="Set referee state to FINISHED">Finish</button>
+                    <button class="button" onclick="sendRefereeCommand('stoptimer')"
+                        title="Stop automatic state transition"
+                        style="background-color: #6c757d;">Stop Timer</button>
+                </div>
+                <script>
+                    function sendRefereeCommand(cmd) {
+                        emitControl('referee_command', { command: cmd });
+                    }
+                </script>
+            </div>
+
+            <div class="control-section">
+                <h3>Velocity Control</h3>
+                <div id="velocity-controls" class="velocity-list"></div>
+                <details class="velocity-info">
+                    <summary>Information</summary>
+                    <div id="velocity-info-content" class="velocity-info-content"></div>
+                </details>
+            </div>
+
+            <div class="control-section">
+                <h3>Manual Camera</h3>
+                <button class="button" onclick="toggleManualCam()"
+                    style="width: 100%; background-color: #6c757d;">Toggle Manual Controls</button>
+                <div id="manual-cam-controls" style="display: none; margin-top: 10px;">
+                    <div class="manual-cam-row">
+                        <label class="manual-cam-label">Pos</label>
+                        <input id="viewer_p_x" placeholder="x" class="input-box manual-cam-input">
+                        <input id="viewer_p_y" placeholder="y" class="input-box manual-cam-input">
+                        <input id="viewer_p_z" placeholder="z" class="input-box manual-cam-input">
+                        <button class="button manual-cam-btn" onclick="sendViewerPoint()">Set Pos</button>
+                    </div>
+                    <div class="manual-cam-row">
+                        <label class="manual-cam-label">Look</label>
+                        <input id="viewer_l_x" placeholder="x" class="input-box manual-cam-input">
+                        <input id="viewer_l_y" placeholder="y" class="input-box manual-cam-input">
+                        <input id="viewer_l_z" placeholder="z" class="input-box manual-cam-input">
+                        <button class="button manual-cam-btn" onclick="sendViewerLookAt()">Set LookAt</button>
+                    </div>
+                </div>
+            </div>
+
+            {% if allow_keyboard_control %}
+            <div class="control-section">
+                <details class="keyboard-control">
+                    <summary>Keyboard Control</summary>
+                    <div class="keyboard-control-body">
+                        <div class="control-row">
+                            <label style="margin: 0; flex: 1;">
+                                Robot
+                                <select id="keyboard-robot-select"></select>
+                            </label>
+                        </div>
+                        <div class="control-row">
+                            <label><input type="checkbox" id="keyboard-enable"> Enable keyboard control</label>
+                        </div>
+                        <div class="control-row keyboard-speed-row">
+                            <label class="keyboard-speed-label" for="kb-speed-vx">x speed</label>
+                            <input id="kb-speed-vx" type="range" min="0" max="1.5" step="0.05" value="0.6">
+                            <span id="kb-speed-vx-val" class="keyboard-speed-val">0.60</span>
+                        </div>
+                        <div class="control-row keyboard-speed-row">
+                            <label class="keyboard-speed-label" for="kb-speed-vy">y speed</label>
+                            <input id="kb-speed-vy" type="range" min="0" max="1.0" step="0.05" value="0.4">
+                            <span id="kb-speed-vy-val" class="keyboard-speed-val">0.40</span>
+                        </div>
+                        <div class="control-row keyboard-speed-row">
+                            <label class="keyboard-speed-label" for="kb-speed-wz">z speed</label>
+                            <input id="kb-speed-wz" type="range" min="0" max="3.0" step="0.1" value="0.8">
+                            <span id="kb-speed-wz-val" class="keyboard-speed-val">0.80</span>
+                        </div>
+                        <div class="keyboard-hint">Hold keys: W/S -> x, A/D -> y, Q/E -> ang_z</div>
+                        <div class="keyboard-hint">Space -> stop</div>
+                        <div class="keyboard-hint">Limits: x +/-1.5, y +/-1.0, z +/-3.0</div>
+                        <div id="keyboard-status" class="keyboard-status">Status: disabled</div>
+                    </div>
+                </details>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        // Same host as the page (works when webview is opened via LAN IP, not only localhost).
+        const socket = io({
+            transports: ["websocket", "polling"],
+            reconnection: true,
+            reconnectionAttempts: 20,
+            reconnectionDelay: 500,
+        });
+        const allowKeyboardControl = {{ (allow_keyboard_control | default(false)) | tojson }};
+        const FALLBACK_POLL_MS = 33;
+        const FALLBACK_STALE_MS = 220;
+        let socketConnected = false;
+        let httpFallbackTimer = null;
+        let lastFrameTs = 0;
+        let lastSocketFrameTs = 0;
+        let fallbackBusy = false;
+        let frameTimes = [];
+        let lastFrameSource = "-";
+
+        function markFrame(source) {
+            const now = Date.now();
+            frameTimes.push(now);
+            const keepMs = 3000;
+            while (frameTimes.length > 0 && (now - frameTimes[0]) > keepMs) {
+                frameTimes.shift();
+            }
+            if (source) lastFrameSource = source;
+        }
+
+        function updateFpsDisplay() {
+            const fpsEl = document.getElementById("fps-value");
+            const srcEl = document.getElementById("fps-source");
+            if (!fpsEl || !srcEl) return;
+            let fps = 0.0;
+            if (frameTimes.length >= 2) {
+                const dt = (frameTimes[frameTimes.length - 1] - frameTimes[0]) / 1000.0;
+                if (dt > 0) fps = (frameTimes.length - 1) / dt;
+            }
+            fpsEl.textContent = fps.toFixed(1);
+            srcEl.textContent = lastFrameSource;
+        }
+        setInterval(updateFpsDisplay, 500);
+
+        function setConnStatus(text) {
+            const el = document.getElementById("status");
+            if (el) el.textContent = text;
+        }
+
+        async function emitControl(event, data = {}) {
+            // HTTP-first control path is more robust in our Flask threaded setup.
+            try {
+                const resp = await fetch('/api/command', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ event, data }),
+                    cache: 'no-store',
+                });
+                if (resp.ok) return true;
+            } catch (e) {
+                // fall through to socket fallback
+            }
+            if (socketConnected) {
+                socket.emit(event, data);
+                return true;
+            }
+            return false;
+        }
+        socket.on("connect", () => {
+            socketConnected = true;
+            lastSocketFrameTs = Date.now();
+            startHttpFallback();
+            setConnStatus("connected");
+        });
+        socket.on("disconnect", () => {
+            socketConnected = false;
+            setConnStatus("disconnected");
+            startHttpFallback();
+        });
+        socket.on("connect_error", (err) => {
+            console.error("Socket.IO connect_error", err);
+            socketConnected = false;
+            const msg = (err && (err.message || err.description)) ? String(err.message || err.description) : "unknown";
+            setConnStatus(`connect_error: ${msg}`);
+            startHttpFallback();
+        });
+
+        async function pollFrameFallback() {
+            if (fallbackBusy) return;
+            fallbackBusy = true;
+            try {
+                const now = Date.now();
+                // Avoid excessive browser image decode churn under fallback mode.
+                if (now - lastFrameTs > 16) {
+                    const img = document.getElementById('video');
+                    img.src = `/api/frame.jpg?t=${now}`;
+                    lastFrameTs = now;
+                    markFrame("http");
+                }
+                const resp = await fetch(`/api/states?t=${now}`, { cache: "no-store" });
+                if (resp.ok) {
+                    const states = await resp.json();
+                    handleRobotStates(states);
+                }
+            } catch (e) {
+                // Keep fallback silent; connect status is shown above.
+            } finally {
+                fallbackBusy = false;
+            }
+        }
+
+        function startHttpFallback() {
+            if (httpFallbackTimer) return;
+            httpFallbackTimer = setInterval(() => {
+                if (!socketConnected || (Date.now() - lastSocketFrameTs > FALLBACK_STALE_MS)) {
+                    pollFrameFallback();
+                }
+            }, FALLBACK_POLL_MS);
+        }
+
+        function stopHttpFallback() {
+            if (!httpFallbackTimer) return;
+            clearInterval(httpFallbackTimer);
+            httpFallbackTimer = null;
+        }
+
+        // Listen for 'new_frame' event from the server
+        socket.on('new_frame', (data) => {
+            const img = document.getElementById('video');
+            requestAnimationFrame(() => {
+                img.src = 'data:image/jpeg;base64,' + data.image;
+                lastSocketFrameTs = Date.now();
+                markFrame("socket");
+            });
+        });
+
+        function sendResetEnv() { emitControl('reset_env', {}); };
+        function sendRestartMatch() { emitControl('restart_match', {}); };
+
+        function readVec3(ids, fallback) {
+            const out = [];
+            for (let i = 0; i < ids.length; i++) {
+                const raw = (document.getElementById(ids[i]).value || '').trim();
+                if (raw === '') {
+                    out.push(fallback[i]);
+                    continue;
+                }
+                const v = parseFloat(raw);
+                if (!Number.isFinite(v)) return null;
+                out.push(v);
+            }
+            return out;
+        }
+
+        function sendViewerPoint() {
+            const point = readVec3(['viewer_p_x', 'viewer_p_y', 'viewer_p_z'], [3.0, 3.0, 1.5]);
+            if (point === null) {
+                alert('Manual camera position must be numeric');
+                return;
+            }
+            emitControl('set_viewer_point', { point });
+        };
+
+        function sendViewerLookAt() {
+            const point = readVec3(['viewer_l_x', 'viewer_l_y', 'viewer_l_z'], [0.0, 0.0, 0.8]);
+            if (point === null) {
+                alert('Manual camera look-at must be numeric');
+                return;
+            }
+            emitControl('set_viewer_look_at', { point });
+        }
+
+        function sendCameraPreset(presetName) {
+            console.log("Sending camera preset:", presetName);
+            emitControl('set_camera_preset', { preset: presetName });
+        }
+
+        function emitRobotVelocity(name, vx, vy, wz) {
+            emitControl('set_robot_velocity', { name, vx, vy, wz });
+        }
+
+        function setVelocityForRobot(name) {
+            const vxText = (document.getElementById(`vel-${name}-vx`)?.value || '0').trim();
+            const vyText = (document.getElementById(`vel-${name}-vy`)?.value || '0').trim();
+            const wzText = (document.getElementById(`vel-${name}-wz`)?.value || '0').trim();
+            const vx = parseFloat(vxText);
+            const vy = parseFloat(vyText);
+            const wz = parseFloat(wzText);
+            if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(wz)) {
+                alert(`Velocity input for ${name} must be numeric`);
+                return;
+            }
+            velocityInputDrafts[name] = { vx: vxText, vy: vyText, wz: wzText };
+            emitRobotVelocity(name, vx, vy, wz);
+        }
+
+        function stopVelocityForRobot(name) {
+            velocityInputDrafts[name] = { vx: '0', vy: '0', wz: '0' };
+            const vxEl = document.getElementById(`vel-${name}-vx`);
+            const vyEl = document.getElementById(`vel-${name}-vy`);
+            const wzEl = document.getElementById(`vel-${name}-wz`);
+            if (vxEl) vxEl.value = '0';
+            if (vyEl) vyEl.value = '0';
+            if (wzEl) wzEl.value = '0';
+            emitRobotVelocity(name, 0.0, 0.0, 0.0);
+        }
+
+        function renderVelocityControls() {
+            const container = document.getElementById('velocity-controls');
+            if (!container) return;
+            if (velocityControlsLocked) {
+                return;
+            }
+            const activeRobots = entities
+                .filter(e => e.name !== 'ball' && e.active)
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map(e => e.name);
+            if (activeRobots.length === 0) {
+                return;
+            }
+            velocityRobotNames = activeRobots;
+            velocityControlsLocked = true;
+            container.innerHTML = '';
+            velocityRobotNames.forEach((name) => {
+                if (!velocityInputDrafts[name]) {
+                    velocityInputDrafts[name] = { vx: '', vy: '', wz: '' };
+                }
+                const draft = velocityInputDrafts[name];
+                const row = document.createElement('div');
+                row.className = 'velocity-row';
+                row.innerHTML = `
+                    <span class="velocity-name">${name}</span>
+                    <input id="vel-${name}-vx" class="input-box velocity-input" placeholder="vx" value="${draft.vx}">
+                    <input id="vel-${name}-vy" class="input-box velocity-input" placeholder="vy" value="${draft.vy}">
+                    <input id="vel-${name}-wz" class="input-box velocity-input" placeholder="ang_z" value="${draft.wz}">
+                    <button class="button velocity-btn-set" onclick="setVelocityForRobot('${name}')">Set</button>
+                    <button class="button velocity-btn-stop" onclick="stopVelocityForRobot('${name}')">Stop</button>
+                `;
+                container.appendChild(row);
+                const vxEl = document.getElementById(`vel-${name}-vx`);
+                const vyEl = document.getElementById(`vel-${name}-vy`);
+                const wzEl = document.getElementById(`vel-${name}-wz`);
+                const onInput = () => {
+                    velocityInputDrafts[name] = {
+                        vx: (vxEl?.value || '').trim(),
+                        vy: (vyEl?.value || '').trim(),
+                        wz: (wzEl?.value || '').trim(),
+                    };
+                };
+                vxEl?.addEventListener('input', onInput);
+                vyEl?.addEventListener('input', onInput);
+                wzEl?.addEventListener('input', onInput);
+            });
+        }
+
+        function fmt3(a, b, c) {
+            return `(${Number(a).toFixed(2)}, ${Number(b).toFixed(2)}, ${Number(c).toFixed(2)})`;
+        }
+
+        function escapeHtml(text) {
+            return String(text)
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#39;');
+        }
+
+        function updateVelocityHistory(states) {
+            const now = Date.now();
+            const activeRobotNames = new Set();
+            Object.keys(states)
+                .filter(name => name !== '_last_msg' && name !== 'ball' && states[name] && states[name].active)
+                .forEach((name) => {
+                    const s = states[name];
+                    const cmd = s.cmd_vel || [0.0, 0.0, 0.0];
+                    const vx = Number(cmd[0]) || 0.0;
+                    const vy = Number(cmd[1]) || 0.0;
+                    const wz = Number(cmd[2]) || 0.0;
+                    if (!velocityHistories[name]) velocityHistories[name] = [];
+                    velocityHistories[name].push({ t: now, vx, vy, wz });
+                    if (velocityHistories[name].length > VELOCITY_HISTORY_MAX_POINTS) {
+                        velocityHistories[name].splice(0, velocityHistories[name].length - VELOCITY_HISTORY_MAX_POINTS);
+                    }
+                    activeRobotNames.add(name);
+                });
+            Object.keys(velocityHistories).forEach((name) => {
+                if (!activeRobotNames.has(name)) {
+                    delete velocityHistories[name];
+                }
+            });
+        }
+
+        function pointsForSeries(samples, key, maxAbs, width, height) {
+            if (!samples || samples.length < 2) return '';
+            const denom = Math.max(maxAbs, 1e-6);
+            const out = [];
+            const n = samples.length;
+            for (let i = 0; i < n; i++) {
+                const x = (i / (n - 1)) * width;
+                const v = Number(samples[i][key]) || 0.0;
+                const y = height - ((v + denom) / (2 * denom)) * height;
+                out.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+            }
+            return out.join(' ');
+        }
+
+        function buildVelocityChartSvg(name, cmd) {
+            const samples = velocityHistories[name] || [];
+            if (samples.length < 2) {
+                return '<div class="velocity-chart-empty">Waiting history...</div>';
+            }
+            let maxAbs = 0.0;
+            for (let i = 0; i < samples.length; i++) {
+                maxAbs = Math.max(maxAbs, Math.abs(samples[i].vx), Math.abs(samples[i].vy), Math.abs(samples[i].wz));
+            }
+            maxAbs = Math.max(
+                maxAbs,
+                Math.abs(Number(cmd[0]) || 0.0),
+                Math.abs(Number(cmd[1]) || 0.0),
+                Math.abs(Number(cmd[2]) || 0.0),
+                0.1
+            );
+
+            const width = 232;
+            const height = 64;
+            const vxPts = pointsForSeries(samples, 'vx', maxAbs, width, height);
+            const vyPts = pointsForSeries(samples, 'vy', maxAbs, width, height);
+            const wzPts = pointsForSeries(samples, 'wz', maxAbs, width, height);
+            const zeroY = (height * 0.5).toFixed(1);
+            const latestVx = samples[samples.length - 1].vx;
+            const latestVy = samples[samples.length - 1].vy;
+            const latestWz = samples[samples.length - 1].wz;
+
+            return `
+                <div class="velocity-chart-wrap">
+                    <svg class="velocity-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">
+                        <line x1="0" y1="${zeroY}" x2="${width}" y2="${zeroY}" class="velocity-zero-line"></line>
+                        <polyline points="${vxPts}" class="velocity-line-vx"></polyline>
+                        <polyline points="${vyPts}" class="velocity-line-vy"></polyline>
+                        <polyline points="${wzPts}" class="velocity-line-wz"></polyline>
+                    </svg>
+                    <div class="velocity-chart-legend">
+                        <span><i class="legend-dot vx"></i>vx ${latestVx.toFixed(2)}</span>
+                        <span><i class="legend-dot vy"></i>vy ${latestVy.toFixed(2)}</span>
+                        <span><i class="legend-dot wz"></i>wz ${latestWz.toFixed(2)}</span>
+                        <span class="legend-scale">±${maxAbs.toFixed(2)}</span>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderVelocityInformation() {
+            const panel = document.getElementById('velocity-info-content');
+            if (!panel) return;
+            const rows = [];
+
+            const robotNames = Object.keys(latestStates)
+                .filter(name => name !== '_last_msg' && name !== 'ball' && latestStates[name] && latestStates[name].active)
+                .sort();
+
+            robotNames.forEach((name) => {
+                const s = latestStates[name];
+                const cmd = s.cmd_vel || [0.0, 0.0, 0.0];
+                const safeName = escapeHtml(name);
+                const chartHtml = buildVelocityChartSvg(name, cmd);
+                rows.push(
+                    `<div class="velocity-info-row">
+                        <div class="velocity-info-head">
+                            <span class="velocity-info-name">${safeName}</span>
+                            <span>cmd_vel ${fmt3(cmd[0], cmd[1], cmd[2])}</span>
+                            <span>pos ${fmt3(s.x || 0, s.y || 0, s.yaw || 0)}</span>
+                        </div>
+                        ${chartHtml}
+                    </div>`
+                );
+            });
+
+            if (latestStates.ball) {
+                const b = latestStates.ball;
+                rows.push(
+                    `<div class="velocity-info-row"><span class="velocity-info-name">ball</span><span>ball_pos ${fmt3(b.x || 0, b.y || 0, b.z || 0)}</span></div>`
+                );
+            }
+
+            panel.innerHTML = rows.length > 0 ? rows.join('') : '<div class="velocity-empty">No state yet</div>';
+        }
+
+        function refreshKeyboardRobotOptions() {
+            if (!allowKeyboardControl) return;
+            if (keyboardRobotOptionsLocked) return;
+            const select = document.getElementById('keyboard-robot-select');
+            if (!select) return;
+            const robots = entities
+                .filter(e => e.name !== 'ball' && e.active)
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map(e => e.name);
+            const prev = (select.value || '').trim();
+            if (robots.length === 0) {
+                updateKeyboardStatus('Waiting active robots');
+                return;
+            }
+            select.innerHTML = '';
+            robots.forEach((name) => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                select.appendChild(opt);
+            });
+            select.value = robots.includes(prev) ? prev : robots[0];
+            keyboardRobotOptionsLocked = true;
+        }
+
+        function selectedKeyboardRobot() {
+            if (!allowKeyboardControl) return '';
+            const select = document.getElementById('keyboard-robot-select');
+            return (select?.value || '').trim();
+        }
+
+        function updateKeyboardStatus(extra = '') {
+            if (!allowKeyboardControl) return;
+            const status = document.getElementById('keyboard-status');
+            if (!status) return;
+            const robot = selectedKeyboardRobot() || '-';
+            const mode = keyboardEnabled ? 'enabled' : 'disabled';
+            status.textContent = `Status: ${mode} | robot=${robot}${extra ? ` | ${extra}` : ''}`;
+        }
+
+        function clamp(v, lo, hi) {
+            return Math.max(lo, Math.min(hi, v));
+        }
+
+        function getKeyboardMagnitudes() {
+            const vx = parseFloat(document.getElementById('kb-speed-vx')?.value || '0');
+            const vy = parseFloat(document.getElementById('kb-speed-vy')?.value || '0');
+            const wz = parseFloat(document.getElementById('kb-speed-wz')?.value || '0');
+            return {
+                vx: clamp(Number.isFinite(vx) ? vx : 0.0, 0.0, KEYBOARD_LIMITS.vx),
+                vy: clamp(Number.isFinite(vy) ? vy : 0.0, 0.0, KEYBOARD_LIMITS.vy),
+                wz: clamp(Number.isFinite(wz) ? wz : 0.0, 0.0, KEYBOARD_LIMITS.wz),
+            };
+        }
+
+        function updateKeyboardSpeedLabels() {
+            if (!allowKeyboardControl) return;
+            const m = getKeyboardMagnitudes();
+            const set = (id, v) => {
+                const el = document.getElementById(id);
+                if (el) el.textContent = v.toFixed(2);
+            };
+            set('kb-speed-vx-val', m.vx);
+            set('kb-speed-vy-val', m.vy);
+            set('kb-speed-wz-val', m.wz);
+        }
+
+        function computeKeyboardCmd() {
+            const m = getKeyboardMagnitudes();
+            const dir = (k) => keyboardPressed.has(k) ? 1.0 : 0.0;
+            const vx = (dir('w') - dir('s')) * m.vx;
+            const vy = (dir('a') - dir('d')) * m.vy;
+            const wz = (dir('q') - dir('e')) * m.wz;
+            return { vx, vy, wz };
+        }
+
+        function emitKeyboardVelocity(forceZero = false) {
+            if (!allowKeyboardControl) return;
+            const robot = selectedKeyboardRobot();
+            if (!robot) return;
+            if (!keyboardEnabled && !forceZero) return;
+            const cmd = forceZero ? { vx: 0.0, vy: 0.0, wz: 0.0 } : computeKeyboardCmd();
+            emitRobotVelocity(robot, cmd.vx, cmd.vy, cmd.wz);
+            keyboardLastRobot = robot;
+            updateKeyboardStatus(`cmd=(${cmd.vx.toFixed(2)}, ${cmd.vy.toFixed(2)}, ${cmd.wz.toFixed(2)})`);
+        }
+
+        function zeroKeyboardRobot(name) {
+            if (!allowKeyboardControl) return;
+            const robot = (name || '').trim();
+            if (!robot) return;
+            emitRobotVelocity(robot, 0.0, 0.0, 0.0);
+        }
+
+        function startKeyboardLoop() {
+            if (keyboardTimer) return;
+            keyboardTimer = setInterval(() => emitKeyboardVelocity(false), 50);
+        }
+
+        function stopKeyboardLoop(sendZero = true) {
+            if (keyboardTimer) {
+                clearInterval(keyboardTimer);
+                keyboardTimer = null;
+            }
+            if (sendZero) emitKeyboardVelocity(true);
+        }
+
+        function onKeyboardEnableChanged() {
+            if (!allowKeyboardControl) return;
+            const enabled = !!document.getElementById('keyboard-enable')?.checked;
+            keyboardEnabled = enabled;
+            keyboardPressed.clear();
+            if (enabled) {
+                startKeyboardLoop();
+                updateKeyboardStatus('ready');
+            } else {
+                stopKeyboardLoop(true);
+                updateKeyboardStatus();
+            }
+        }
+
+        function handleKeyboardDown(e) {
+            if (!allowKeyboardControl || !keyboardEnabled) return;
+            const tag = (e.target?.tagName || '').toLowerCase();
+            if (tag === 'input' || tag === 'select' || tag === 'textarea' || tag === 'button' || e.target?.isContentEditable) {
+                return;
+            }
+            const k = (e.key || '').toLowerCase();
+            if (!['w', 'a', 's', 'd', 'q', 'e', ' '].includes(k)) return;
+            e.preventDefault();
+            if (k === ' ') {
+                keyboardPressed.clear();
+                emitKeyboardVelocity(true);
+                return;
+            }
+            keyboardPressed.add(k);
+        }
+
+        function handleKeyboardUp(e) {
+            if (!allowKeyboardControl || !keyboardEnabled) return;
+            const k = (e.key || '').toLowerCase();
+            if (!['w', 'a', 's', 'd', 'q', 'e'].includes(k)) return;
+            e.preventDefault();
+            keyboardPressed.delete(k);
+        }
+
+        function bindKeyboardControl() {
+            if (!allowKeyboardControl) return;
+            const enableEl = document.getElementById('keyboard-enable');
+            const selectEl = document.getElementById('keyboard-robot-select');
+            enableEl?.addEventListener('change', onKeyboardEnableChanged);
+            selectEl?.addEventListener('change', () => {
+                const prevRobot = keyboardLastRobot;
+                const currRobot = selectedKeyboardRobot();
+                if (prevRobot && prevRobot !== currRobot) {
+                    zeroKeyboardRobot(prevRobot);
+                }
+                if (keyboardEnabled) {
+                    emitKeyboardVelocity(true);
+                }
+                updateKeyboardStatus();
+            });
+            window.addEventListener('keydown', handleKeyboardDown);
+            window.addEventListener('keyup', handleKeyboardUp);
+            window.addEventListener('blur', () => {
+                keyboardPressed.clear();
+                if (keyboardEnabled) emitKeyboardVelocity(true);
+            });
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    keyboardPressed.clear();
+                    if (keyboardEnabled) emitKeyboardVelocity(true);
+                }
+            });
+            ['kb-speed-vx', 'kb-speed-vy', 'kb-speed-wz'].forEach((id) => {
+                const el = document.getElementById(id);
+                el?.addEventListener('input', () => {
+                    updateKeyboardSpeedLabels();
+                    if (keyboardEnabled) emitKeyboardVelocity(false);
+                });
+            });
+            updateKeyboardSpeedLabels();
+            refreshKeyboardRobotOptions();
+            updateKeyboardStatus();
+        }
+
+        function toggleManualCam() {
+            const el = document.getElementById('manual-cam-controls');
+            el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // --- Minimap Logic ---
+        const canvas = document.getElementById('minimap');
+        const ctx = canvas.getContext('2d');
+        canvas.style.touchAction = 'none';
+        canvas.style.userSelect = 'none';
+
+        // Field Settings (dynamic from simulator _field metadata)
+        let mapCfg = {
+            worldLength: 16.0,
+            worldWidth: 10.0,
+            fieldLength: 14.0,
+            fieldWidth: 9.0,
+            centerCircleDiameter: 1.5,
+            lineWidth: 0.05,
+            goalAreaDepth: 1.0,
+            goalAreaWidth: 3.0,
+            penaltyAreaDepth: 2.0,
+            penaltyAreaWidth: 4.0,
+            penaltySpotDistance: 1.5,
+        };
+        let SCALE_X = canvas.width / mapCfg.worldLength;
+        let SCALE_Y = canvas.height / mapCfg.worldWidth;
+        const CENTER_X = canvas.width / 2;
+        const CENTER_Y = canvas.height / 2;
+
+        function refreshMapScale() {
+            SCALE_X = canvas.width / Math.max(1e-6, mapCfg.worldLength);
+            SCALE_Y = canvas.height / Math.max(1e-6, mapCfg.worldWidth);
+        }
+
+        function applyFieldMeta(meta) {
+            if (!meta) return;
+            const markings = meta.markings || {};
+            mapCfg.worldLength = Number(meta.world_length ?? mapCfg.worldLength);
+            mapCfg.worldWidth = Number(meta.world_width ?? mapCfg.worldWidth);
+            mapCfg.fieldLength = Number(meta.field_length ?? mapCfg.fieldLength);
+            mapCfg.fieldWidth = Number(meta.field_width ?? mapCfg.fieldWidth);
+            mapCfg.centerCircleDiameter = Number(markings.center_circle_diameter ?? mapCfg.centerCircleDiameter);
+            mapCfg.lineWidth = Number(markings.line_width ?? mapCfg.lineWidth);
+            mapCfg.goalAreaDepth = Number(markings.goal_area_depth ?? mapCfg.goalAreaDepth);
+            mapCfg.goalAreaWidth = Number(markings.goal_area_width ?? mapCfg.goalAreaWidth);
+            mapCfg.penaltyAreaDepth = Number(markings.penalty_area_depth ?? mapCfg.penaltyAreaDepth);
+            mapCfg.penaltyAreaWidth = Number(markings.penalty_area_width ?? mapCfg.penaltyAreaWidth);
+            mapCfg.penaltySpotDistance = Number(markings.penalty_spot_distance ?? mapCfg.penaltySpotDistance);
+            refreshMapScale();
+        }
+
+        // Entities State
+        let entities = [
+            { name: 'ball', x: 0, y: 0, theta: 0, r: 6, color: 'white', team: 'none', active: true }
+        ];
+        let latestStates = {};
+        let latestGameState = null;
+        let velocityInputDrafts = {};
+        let velocityRobotNames = [];
+        let velocityControlsLocked = false;
+        const VELOCITY_HISTORY_MAX_POINTS = 120;
+        let velocityHistories = {};
+        const KEYBOARD_LIMITS = { vx: 1.5, vy: 1.0, wz: 3.0 };
+        let keyboardPressed = new Set();
+        let keyboardEnabled = false;
+        let keyboardTimer = null;
+        let keyboardLastRobot = '';
+        let keyboardRobotOptionsLocked = false;
+
+        function formatGameState(gs) {
+            const stateName = gs.state_name || gs.state || "-";
+            const map = {
+                STATE_INITIAL: "Initial",
+                STATE_READY: "Ready",
+                STATE_SET: "Set",
+                STATE_PLAYING: "Playing",
+                STATE_FINISHED: "Finished",
+                STATE_STANDBY: "Standby",
+            };
+            return map[stateName] || stateName || "-";
+        }
+
+        function formatSetPlay(gs) {
+            const sp = gs.set_play_name || gs.set_play || "SET_PLAY_NONE";
+            const map = {
+                SET_PLAY_NONE: "None",
+                SET_PLAY_KICK_OFF: "Kick-Off",
+                SET_PLAY_KICK_IN: "Kick-In",
+                SET_PLAY_GOAL_KICK: "Goal Kick",
+                SET_PLAY_CORNER_KICK: "Corner Kick",
+                SET_PLAY_DIRECT_FREE_KICK: "Direct Free Kick",
+                SET_PLAY_INDIRECT_FREE_KICK: "Indirect Free Kick",
+                SET_PLAY_PENALTY_KICK: "Penalty Kick",
+            };
+            return map[sp] || sp || "-";
+        }
+
+        function resolveScore(gs) {
+            if (Array.isArray(gs.teams) && gs.teams.length >= 2) {
+                const left = Number(gs.teams[0]?.score || 0);
+                const right = Number(gs.teams[1]?.score || 0);
+                return `${left} : ${right}`;
+            }
+            const left = Number(gs.score_left || 0);
+            const right = Number(gs.score_right || 0);
+            return `${left} : ${right}`;
+        }
+
+        function resolveKickingTeam(gs) {
+            const kt = Number(gs.kicking_team);
+            if (Array.isArray(gs.teams) && gs.teams.length > 0 && Number.isFinite(kt)) {
+                for (const t of gs.teams) {
+                    if (Number(t.team_number) === kt) {
+                        const name = t.team_name || `#${kt}`;
+                        return `${name} (#${kt})`;
+                    }
+                }
+            }
+            if (gs.kicking_side) {
+                return String(gs.kicking_side);
+            }
+            return Number.isFinite(kt) ? `#${kt}` : "-";
+        }
+
+        function formatPlayTime(sec) {
+            if (!Number.isFinite(sec)) return "-";
+            const total = Math.max(0, Math.floor(sec));
+            const m = Math.floor(total / 60);
+            const s = total % 60;
+            return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        }
+
+        function renderRefereeStatus() {
+            const panel = document.getElementById('referee-panel');
+            const restartBtn = document.getElementById('restart-match-btn');
+            if (!panel) return;
+            if (!latestGameState) {
+                panel.style.display = 'none';
+                if (restartBtn) restartBtn.style.display = 'none';
+                return;
+            }
+            panel.style.display = 'block';
+            if (restartBtn) restartBtn.style.display = 'inline-block';
+            document.getElementById('ref-state').textContent = formatGameState(latestGameState);
+            document.getElementById('ref-set-play').textContent = formatSetPlay(latestGameState);
+            document.getElementById('ref-kicking-team').textContent = resolveKickingTeam(latestGameState);
+            if (latestGameState.secs_remaining !== undefined && latestGameState.secs_remaining !== null) {
+                document.getElementById('ref-time-left').textContent = formatPlayTime(Number(latestGameState.secs_remaining));
+            } else {
+                document.getElementById('ref-time-left').textContent = formatPlayTime(Number(latestGameState.play_time));
+            }
+            document.getElementById('ref-score').textContent = resolveScore(latestGameState);
+        }
+
+        function inferTeamByName(name) {
+            if (name.startsWith('robot_rp')) return 'red';
+            if (name.startsWith('robot_bp')) return 'blue';
+            return 'none';
+        }
+
+        function createOrGetEntity(name, defaults = {}) {
+            let entity = entities.find(e => e.name === name);
+            if (!entity) {
+                entity = {
+                    name,
+                    x: defaults.x || 0,
+                    y: defaults.y || 0,
+                    theta: defaults.theta || 0,
+                    r: name === 'ball' ? 6 : 8,
+                    color: defaults.color || (name.startsWith('robot_rp') ? 'red' : name.startsWith('robot_bp') ? 'blue' : 'white'),
+                    team: defaults.team || inferTeamByName(name),
+                    active: defaults.active !== undefined ? defaults.active : true,
+                };
+                entities.push(entity);
+            }
+            return entity;
+        }
+
+        // Initialize with all fixed IDs (0-13) for stable map entity ids.
+        function initEntities() {
+            entities = [{ name: 'ball', x: 0, y: 0, theta: 0, r: 6, color: 'white', team: 'none', active: true }];
+            velocityHistories = {};
+            for (let i = 0; i < 7; i++) {
+                entities.push({ name: `robot_rp${i}`, x: -2.0, y: i * 0.5 - 1.5, theta: 0, r: 8, color: 'red', team: 'red', active: false });
+                entities.push({ name: `robot_bp${i}`, x: 2.0, y: i * 0.5 - 1.5, theta: 3.14, r: 8, color: 'blue', team: 'blue', active: false });
+            }
+            renderVelocityControls();
+            renderVelocityInformation();
+            if (!keyboardRobotOptionsLocked) refreshKeyboardRobotOptions();
+            drawMinimap();
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initEntities();
+            bindKeyboardControl();
+        });
+
+        let draggingEntity = null;
+        let isRotating = false;
+        let dragInputMode = null; // 'pointer' | 'mouse' | 'touch' | null
+        const dragCounters = { down: 0, move: 0, up: 0 };
+        let lastPickDistancePx = NaN;
+
+        function updateDragDebug(extra = '') {
+            const el = document.getElementById('drag-debug');
+            if (!el) return;
+            const target = draggingEntity ? draggingEntity.name : '-';
+            el.textContent = `drag ${dragInputMode || 'idle'} d/m/u=${dragCounters.down}/${dragCounters.move}/${dragCounters.up} target=${target}${extra ? ' | ' + extra : ''}`;
+        }
+
+        function toScreen(x_m, y_m) {
+            return { x: CENTER_X + x_m * SCALE_X, y: CENTER_Y - y_m * SCALE_Y };
+        }
+
+        function toSim(screen_x, screen_y) {
+            return { x: (screen_x - CENTER_X) / SCALE_X, y: (CENTER_Y - screen_y) / SCALE_Y };
+        }
+
+        function drawMinimap() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw pitch markings
+            const halfLen = mapCfg.fieldLength * 0.5;
+            const halfWid = mapCfg.fieldWidth * 0.5;
+            const linePx = Math.max(1.0, mapCfg.lineWidth * Math.min(SCALE_X, SCALE_Y));
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+            ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+            ctx.lineWidth = linePx;
+
+            const pTL = toScreen(-halfLen, halfWid);
+            const pTR = toScreen(halfLen, halfWid);
+            const pBL = toScreen(-halfLen, -halfWid);
+            const pBR = toScreen(halfLen, -halfWid);
+
+            // Outer boundary
+            ctx.beginPath();
+            ctx.moveTo(pTL.x, pTL.y);
+            ctx.lineTo(pTR.x, pTR.y);
+            ctx.lineTo(pBR.x, pBR.y);
+            ctx.lineTo(pBL.x, pBL.y);
+            ctx.closePath();
+            ctx.stroke();
+
+            // Halfway line
+            const pHalfTop = toScreen(0, halfWid);
+            const pHalfBot = toScreen(0, -halfWid);
+            ctx.beginPath();
+            ctx.moveTo(pHalfTop.x, pHalfTop.y);
+            ctx.lineTo(pHalfBot.x, pHalfBot.y);
+            ctx.stroke();
+
+            // Center circle + center mark
+            const c = toScreen(0, 0);
+            const rX = (mapCfg.centerCircleDiameter * 0.5) * SCALE_X;
+            const rY = (mapCfg.centerCircleDiameter * 0.5) * SCALE_Y;
+            ctx.beginPath();
+            ctx.ellipse(c.x, c.y, rX, rY, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(c.x, c.y, Math.max(2, linePx * 1.1), 0, Math.PI * 2);
+            ctx.fill();
+
+            // Penalty / goal areas (left and right)
+            function drawArea(xEdgeSign, depth, width) {
+                const x0 = xEdgeSign > 0 ? halfLen - depth : -halfLen;
+                const x1 = xEdgeSign > 0 ? halfLen : -halfLen + depth;
+                const y0 = width * 0.5;
+                const y1 = -width * 0.5;
+                const a = toScreen(x0, y0);
+                const b = toScreen(x1, y0);
+                const d = toScreen(x0, y1);
+                const e = toScreen(x1, y1);
+                ctx.beginPath();
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+                ctx.lineTo(e.x, e.y);
+                ctx.lineTo(d.x, d.y);
+                ctx.closePath();
+                ctx.stroke();
+            }
+            drawArea(-1, mapCfg.penaltyAreaDepth, mapCfg.penaltyAreaWidth);
+            drawArea(1, mapCfg.penaltyAreaDepth, mapCfg.penaltyAreaWidth);
+            drawArea(-1, mapCfg.goalAreaDepth, mapCfg.goalAreaWidth);
+            drawArea(1, mapCfg.goalAreaDepth, mapCfg.goalAreaWidth);
+
+            // Penalty spots
+            const lSpot = toScreen(-halfLen + mapCfg.penaltySpotDistance, 0);
+            const rSpot = toScreen(halfLen - mapCfg.penaltySpotDistance, 0);
+            ctx.beginPath();
+            ctx.arc(lSpot.x, lSpot.y, Math.max(2, linePx * 1.1), 0, Math.PI * 2);
+            ctx.arc(rSpot.x, rSpot.y, Math.max(2, linePx * 1.1), 0, Math.PI * 2);
+            ctx.fill();
+
+            // Draw Entities
+            entities.forEach(ent => {
+                if (!ent.active && ent.name !== 'ball') return;
+                const pos = toScreen(ent.x, ent.y);
+                ctx.fillStyle = ent.color; ctx.beginPath(); ctx.arc(pos.x, pos.y, ent.r, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = 'black'; ctx.lineWidth = 1; ctx.stroke();
+
+                // Draw Direction Indicator (Arrow)
+                const arrowLen = ent.r + 8;
+                // Minimap coordinate system: Y is up (screen Y is down), passing theta directly.
+                // Wait, screen Y increases downwards. Sim Y increases upwards.
+                // So Sim Theta 0 (East) -> Screen 0. 
+                // Sim Theta PI/2 (North) -> Screen -PI/2?
+                // toSim Y flips sign. 
+                // Let's assume standard math: x = r cos(th), y = r sin(th).
+                // Screen X = C + x*S. Screen Y = C - y*S.
+                const tailX = pos.x;
+                const tailY = pos.y;
+                const headSimX = ent.x + Math.cos(ent.theta) * (arrowLen / SCALE_X);
+                const headSimY = ent.y + Math.sin(ent.theta) * (arrowLen / SCALE_Y);
+                const headPos = toScreen(headSimX, headSimY);
+
+                ctx.strokeStyle = 'yellow'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(headPos.x, headPos.y); ctx.stroke();
+
+                // Label
+                ctx.fillStyle = 'black'; ctx.font = '10px Arial'; ctx.fillText(ent.name, pos.x - 15, pos.y - ent.r - 2);
+            });
+        }
+
+        let draggingPointerId = null;
+
+        function eventToCanvasPx(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            const sx = canvas.width / Math.max(1e-6, rect.width);
+            const sy = canvas.height / Math.max(1e-6, rect.height);
+            return {
+                x: (clientX - rect.left) * sx,
+                y: (clientY - rect.top) * sy,
+            };
+        }
+
+        function pickEntityAt(clientX, clientY) {
+            const p = eventToCanvasPx(clientX, clientY);
+            const mouseX = p.x;
+            const mouseY = p.y;
+            let nearestDist = Infinity;
+            let pickedEnt = null;
+            let pickedScore = Infinity;
+            const candidates = entities.filter(ent => ent.active || ent.name === 'ball');
+            for (let ent of candidates) {
+                const pos = toScreen(ent.x, ent.y);
+                const dist = Math.sqrt((mouseX - pos.x) ** 2 + (mouseY - pos.y) ** 2);
+                if (dist < nearestDist) {
+                    nearestDist = dist;
+                }
+                // Very strict hitbox to avoid any "magnet" behavior on blank clicks.
+                // Robot: basically on-circle; Ball: slightly larger for easier picking.
+                const pickRadius = (ent.name === 'ball') ? (ent.r + 1.0) : Math.max(4.0, ent.r * 0.85);
+                if (dist <= pickRadius) {
+                    const score = dist / Math.max(1e-6, pickRadius);
+                    if (score < pickedScore) {
+                        pickedScore = score;
+                        pickedEnt = ent;
+                    }
+                }
+            }
+            lastPickDistancePx = nearestDist;
+            return pickedEnt;
+        }
+
+        function clearDragState() {
+            draggingEntity = null;
+            isRotating = false;
+            draggingPointerId = null;
+            dragInputMode = null;
+        }
+
+        function updateDraggingEntity(clientX, clientY, shiftKey) {
+            if (!draggingEntity) return;
+            const p = eventToCanvasPx(clientX, clientY);
+            const mouseX = p.x;
+            const mouseY = p.y;
+            if (shiftKey) {
+                isRotating = true;
+                const entScreen = toScreen(draggingEntity.x, draggingEntity.y);
+                const dx = mouseX - entScreen.x;
+                const dy = mouseY - entScreen.y;
+                draggingEntity.theta = Math.atan2(-dy, dx);
+            } else {
+                isRotating = false;
+                const simPos = toSim(mouseX, mouseY);
+                draggingEntity.x = simPos.x;
+                draggingEntity.y = simPos.y;
+            }
+            drawMinimap();
+        }
+
+        canvas.addEventListener('pointerdown', (e) => {
+            if (dragInputMode && dragInputMode !== 'pointer') return;
+            const picked = pickEntityAt(e.clientX, e.clientY);
+            if (!picked) {
+                clearDragState();
+                updateDragDebug(`pointerdown miss nearest=${Number.isFinite(lastPickDistancePx) ? lastPickDistancePx.toFixed(1) : '-'}`);
+                return;
+            }
+            draggingEntity = picked;
+            draggingPointerId = e.pointerId;
+            dragInputMode = 'pointer';
+            dragCounters.down += 1;
+            updateDragDebug(`pointerdown ${picked.name} d=${Number.isFinite(lastPickDistancePx) ? lastPickDistancePx.toFixed(1) : '-'}`);
+            try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('pointermove', (e) => {
+            if (dragInputMode !== 'pointer') return;
+            if (!draggingEntity) return;
+            if (draggingPointerId !== null && e.pointerId !== draggingPointerId) return;
+            dragCounters.move += 1;
+            updateDraggingEntity(e.clientX, e.clientY, e.shiftKey);
+            updateDragDebug('pointermove');
+            e.preventDefault();
+        });
+
+        async function commitDraggingEntityTeleport() {
+            if (!draggingEntity) return;
+            const payload = {
+                name: draggingEntity.name,
+                x: draggingEntity.x,
+                y: draggingEntity.y,
+                theta: draggingEntity.theta
+            };
+            console.log(
+                `Teleporting ${payload.name} to (${payload.x.toFixed(2)}, ${payload.y.toFixed(2)}, th=${payload.theta.toFixed(2)})`
+            );
+            const ok = await emitControl('teleport_entity', payload);
+            if (!ok) {
+                setConnStatus('control send failed');
+            }
+            draggingEntity = null;
+            isRotating = false;
+        }
+
+        async function endPointerDrag(e) {
+            if (dragInputMode !== 'pointer') return;
+            if (draggingPointerId !== null && e.pointerId !== draggingPointerId) return;
+            try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+            draggingPointerId = null;
+            dragInputMode = null;
+            dragCounters.up += 1;
+            updateDragDebug('pointerup');
+            await commitDraggingEntityTeleport();
+        }
+
+        canvas.addEventListener('pointerup', endPointerDrag);
+        canvas.addEventListener('pointercancel', endPointerDrag);
+
+        // Mouse fallback for environments that do not emit pointer events.
+        canvas.addEventListener('mousedown', (e) => {
+            if (dragInputMode && dragInputMode !== 'mouse') return;
+            const picked = pickEntityAt(e.clientX, e.clientY);
+            if (!picked) {
+                clearDragState();
+                updateDragDebug(`mousedown miss nearest=${Number.isFinite(lastPickDistancePx) ? lastPickDistancePx.toFixed(1) : '-'}`);
+                return;
+            }
+            draggingEntity = picked;
+            dragInputMode = 'mouse';
+            dragCounters.down += 1;
+            updateDragDebug(`mousedown ${picked.name} d=${Number.isFinite(lastPickDistancePx) ? lastPickDistancePx.toFixed(1) : '-'}`);
+            e.preventDefault();
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (dragInputMode !== 'mouse') return;
+            if (!draggingEntity) return;
+            dragCounters.move += 1;
+            updateDraggingEntity(e.clientX, e.clientY, e.shiftKey);
+            updateDragDebug('mousemove');
+            e.preventDefault();
+        });
+
+        window.addEventListener('mouseup', async () => {
+            if (dragInputMode !== 'mouse') return;
+            dragCounters.up += 1;
+            dragInputMode = null;
+            updateDragDebug('mouseup');
+            await commitDraggingEntityTeleport();
+        });
+
+        // Touch fallback for mobile-like browser engines.
+        canvas.addEventListener('touchstart', (e) => {
+            if (dragInputMode && dragInputMode !== 'touch') return;
+            const t = e.touches && e.touches[0];
+            if (!t) return;
+            const picked = pickEntityAt(t.clientX, t.clientY);
+            if (!picked) {
+                clearDragState();
+                updateDragDebug(`touchstart miss nearest=${Number.isFinite(lastPickDistancePx) ? lastPickDistancePx.toFixed(1) : '-'}`);
+                return;
+            }
+            draggingEntity = picked;
+            dragInputMode = 'touch';
+            dragCounters.down += 1;
+            updateDragDebug(`touchstart ${picked.name} d=${Number.isFinite(lastPickDistancePx) ? lastPickDistancePx.toFixed(1) : '-'}`);
+            e.preventDefault();
+        }, { passive: false });
+
+        canvas.addEventListener('touchmove', (e) => {
+            if (dragInputMode !== 'touch') return;
+            if (!draggingEntity) return;
+            const t = e.touches && e.touches[0];
+            if (!t) return;
+            dragCounters.move += 1;
+            updateDraggingEntity(t.clientX, t.clientY, false);
+            updateDragDebug('touchmove');
+            e.preventDefault();
+        }, { passive: false });
+
+        window.addEventListener('touchend', async () => {
+            if (dragInputMode !== 'touch') return;
+            dragCounters.up += 1;
+            dragInputMode = null;
+            updateDragDebug('touchend');
+            await commitDraggingEntityTeleport();
+        }, { passive: false });
+
+        window.addEventListener('blur', () => {
+            clearDragState();
+            updateDragDebug('window blur');
+        });
+
+        // --- Robot States Sync from Backend ---
+        socket.on('field_meta', function (meta) {
+            applyFieldMeta(meta);
+            drawMinimap();
+        });
+
+        function handleRobotStates(states) {
+            if (!states || typeof states !== "object") return;
+            // Handle Metadata first
+            if (states._last_msg) {
+                const msg = states._last_msg;
+                // Format timestamp to relative or readable time
+                // Assuming timestamp is epoch seconds
+                const date = new Date(msg.timestamp * 1000);
+                const timeStr = date.toLocaleTimeString().split(' ')[0]; // HH:MM:SS
+
+                document.getElementById('msg-time').textContent = timeStr;
+                document.getElementById('msg-id').textContent = msg.id;
+                document.getElementById('msg-src').textContent = msg.source;
+
+                // Cleanup so it doesn't mess with loop
+                delete states._last_msg;
+            }
+            if (states._game) {
+                latestGameState = states._game;
+                delete states._game;
+            } else {
+                latestGameState = null;
+            }
+            renderRefereeStatus();
+            latestStates = states;
+            updateVelocityHistory(states);
+            renderVelocityInformation();
+
+            const syncEnabled = document.getElementById('sync-from-sim').checked;
+            if (!syncEnabled || draggingEntity) return;  // Don't sync while dragging
+
+            let redCount = 0;
+            let blueCount = 0;
+            for (const [name, state] of Object.entries(states)) {
+                // Find or create entity
+                let entity = createOrGetEntity(name, { team: state.team, active: !!state.active });
+                entity.x = state.x;
+                entity.y = state.y;
+                entity.theta = state.yaw || 0;
+                entity.active = !!state.active;
+                entity.team = state.team || entity.team;
+                if (entity.active && entity.team === 'red') redCount += 1;
+                if (entity.active && entity.team === 'blue') blueCount += 1;
+            }
+
+            document.getElementById('red-count').textContent = String(redCount);
+            document.getElementById('blue-count').textContent = String(blueCount);
+            renderVelocityControls();
+            if (!keyboardRobotOptionsLocked) refreshKeyboardRobotOptions();
+            drawMinimap();
+        }
+
+        socket.on('robot_states', handleRobotStates);
+
+        drawMinimap();
+    </script>
+
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e9ecef;
+        }
+
+        .top-scoreboard {
+            position: fixed;
+            top: 12px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            pointer-events: none;
+        }
+
+        .main-container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+        }
+
+        /* Left Panel */
+        .left-panel {
+            flex: 5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background-color: #000;
+            padding: 0;
+        }
+
+        #video-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+        }
+
+        /* Right Panel */
+        .right-panel {
+            flex: 1.69;
+            min-width: 372px;
+            max-width: 507px;
+            background-color: #f8f9fa;
+            padding: 20px;
+            overflow-y: auto;
+            box-shadow: -2px 0 5px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .control-section {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .control-section h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 5px;
+            color: #495057;
+            font-size: 1.1em;
+        }
+
+        .control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .button {
+            flex: 1;
+            padding: 8px 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-weight: 500;
+            font-size: 0.9em;
+            white-space: nowrap;
+        }
+
+        .button:hover {
+            background-color: #0056b3;
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .input-box {
+            padding: 6px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            width: 50px;
+            text-align: center;
+        }
+
+        .manual-cam-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .manual-cam-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .manual-cam-label {
+            min-width: 38px;
+            color: #495057;
+            font-weight: 600;
+            font-size: 0.9em;
+        }
+
+        .manual-cam-input {
+            width: 56px;
+        }
+
+        .manual-cam-btn {
+            flex: 0 0 auto;
+            min-width: 86px;
+        }
+
+        .velocity-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .velocity-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: nowrap;
+        }
+
+        .velocity-name {
+            min-width: 72px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .velocity-input {
+            width: 58px;
+        }
+
+        .velocity-btn-set,
+        .velocity-btn-stop {
+            flex: 0 0 auto;
+            min-width: 52px;
+            padding: 6px 8px;
+        }
+
+        .velocity-btn-stop {
+            background-color: #dc3545;
+        }
+
+        .velocity-btn-stop:hover {
+            background-color: #b02a37;
+        }
+
+        .velocity-empty {
+            font-size: 12px;
+            color: #6c757d;
+        }
+
+        .velocity-info {
+            margin-top: 8px;
+            border-top: 1px solid #e9ecef;
+            padding-top: 6px;
+        }
+
+        .velocity-info summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: #495057;
+            font-weight: 600;
+        }
+
+        .velocity-info-content {
+            margin-top: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            max-height: 180px;
+            overflow-y: auto;
+            font-size: 12px;
+            color: #343a40;
+        }
+
+        .velocity-info-row {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            border: 1px solid #e9ecef;
+            border-radius: 6px;
+            padding: 6px 8px;
+            background: #fbfcfd;
+        }
+
+        .velocity-info-head {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .velocity-info-name {
+            min-width: 72px;
+            font-weight: 700;
+        }
+
+        .velocity-chart-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .velocity-chart {
+            width: 100%;
+            height: 64px;
+            border: 1px solid #e2e8f0;
+            border-radius: 4px;
+            background: #ffffff;
+        }
+
+        .velocity-zero-line {
+            stroke: #cbd5e1;
+            stroke-width: 1;
+            stroke-dasharray: 3 3;
+        }
+
+        .velocity-line-vx {
+            fill: none;
+            stroke: #0ea5e9;
+            stroke-width: 2;
+            stroke-linejoin: round;
+            stroke-linecap: round;
+        }
+
+        .velocity-line-vy {
+            fill: none;
+            stroke: #22c55e;
+            stroke-width: 2;
+            stroke-linejoin: round;
+            stroke-linecap: round;
+        }
+
+        .velocity-line-wz {
+            fill: none;
+            stroke: #ef4444;
+            stroke-width: 2;
+            stroke-linejoin: round;
+            stroke-linecap: round;
+        }
+
+        .velocity-chart-legend {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 11px;
+            color: #475569;
+        }
+
+        .legend-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            margin-right: 4px;
+            vertical-align: middle;
+        }
+
+        .legend-dot.vx {
+            background: #0ea5e9;
+        }
+
+        .legend-dot.vy {
+            background: #22c55e;
+        }
+
+        .legend-dot.wz {
+            background: #ef4444;
+        }
+
+        .legend-scale {
+            margin-left: auto;
+            color: #64748b;
+        }
+
+        .velocity-chart-empty {
+            font-size: 11px;
+            color: #94a3b8;
+            border: 1px dashed #cbd5e1;
+            border-radius: 4px;
+            padding: 6px 8px;
+            background: #ffffff;
+        }
+
+        .keyboard-control summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: #495057;
+            font-weight: 700;
+        }
+
+        .keyboard-control-body {
+            margin-top: 10px;
+        }
+
+        .keyboard-speed-row {
+            align-items: center;
+            gap: 8px;
+        }
+
+        .keyboard-speed-label {
+            min-width: 52px;
+            margin: 0;
+            color: #495057;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .keyboard-speed-row input[type="range"] {
+            flex: 1;
+        }
+
+        .keyboard-speed-val {
+            min-width: 42px;
+            text-align: right;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 12px;
+            color: #1f2937;
+        }
+
+        .keyboard-hint {
+            font-size: 12px;
+            color: #495057;
+            margin-top: 6px;
+        }
+
+        .keyboard-status {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #1f2937;
+            background: #f3f4f6;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            padding: 6px 8px;
+        }
+
+        .referee-panel {
+            min-width: 320px;
+            border: 1px solid rgba(15, 23, 42, 0.12);
+            border-radius: 12px;
+            padding: 10px 14px;
+            background: rgba(255, 255, 255, 0.94);
+            backdrop-filter: blur(6px);
+            box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+        }
+
+        .referee-title {
+            text-align: center;
+            font-size: 11px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: #334155;
+            margin-bottom: 8px;
+        }
+
+        .referee-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 14px;
+        }
+
+        .referee-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            color: #334155;
+            gap: 10px;
+        }
+
+        .referee-row strong {
+            color: #0f172a;
+        }
+
+        @media (max-width: 900px) {
+            .top-scoreboard {
+                top: 8px;
+            }
+
+            .referee-panel {
+                min-width: 260px;
+                padding: 8px 10px;
+            }
+
+            .referee-grid {
+                grid-template-columns: 1fr;
+                gap: 4px;
+            }
+        }
+
+        canvas {
+            background-color: #4CAF50;
+            border-radius: 4px;
+            border: 2px solid #2e7d32;
+            cursor: crosshair;
+            touch-action: none;
+            width: 100%;
+            max-width: 400px;
+        }
+    </style>
+</body>
+
+</html>

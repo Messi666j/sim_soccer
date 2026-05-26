@@ -1,0 +1,12 @@
+# mos-brain decider requirements (simulation mode, no ROS2)
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+numpy>=1.19.0
+PyYAML>=5.0
+
+# State machine library
+transitions>=0.8.0
+
+# ZeroMQ for simulation communication
+pyzmq>=22.0.0

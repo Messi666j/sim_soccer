@@ -1,0 +1,10 @@
+# Exclude all files and directories.
+*
+
+# Unexclude specified files/directories.
+!motrix_envs/**/*
+!motrix_rl/**/*
+!scripts/**/*
+!pyproject.toml
+!uv.lock
+!uv.toml

@@ -1,0 +1,19 @@
+# 业务依赖 - Web 服务 + 工具库
+# 注意：isaaclab、torch 由 nvcr.io/nvidia/isaac-lab 基础镜像提供，不要 pip install
+# trackerLab 在 PyPI 上不存在，如需使用请通过 git 仓库或本地路径单独安装
+
+cli-args==1.1.0
+fastapi==0.115.6
+Flask==3.1.0
+flask-socketio==5.4.1
+gymnasium==1.0.0
+matplotlib==3.9.2
+numpy==1.26.4
+Pillow==11.0.0
+pydantic==2.10.3
+PyYAML==6.0.2
+pyzmq==26.2.0
+rich==13.9.4
+transitions==0.9.2
+uvicorn==0.32.1
+gunicorn==23.0.0

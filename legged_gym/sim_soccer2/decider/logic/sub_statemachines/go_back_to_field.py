@@ -1,0 +1,278 @@
+from math import inf
+import math
+import time
+from transitions import Machine
+import numpy as np
+
+
+class GoBackToFieldStateMachine:
+    def __init__(self, agent, aim_x=3.3, aim_y=0.5):
+        """
+        初始化返回场地状态机
+
+        :param agent: 机器人代理对象，包含机器人的各种状态和控制方法
+        :param aim_x: 目标位置的 x 坐标
+        :param aim_y: 目标位置的 y 坐标
+        """
+        self.agent = agent
+        self.logger = self.agent.get_logger().get_child("go_back_to_field_fsm")
+        self._config = self.agent.get_config()
+        self.read_params()  # 读取配置参数
+        
+        self.last_rotate = 1  # 上次旋转的方向, -1为右，1为左
+        self.aim_yaw_last_rotate = 1  # 到达目标位置后，调整yaw的方向避免180度的情况抽搐
+        self.last_arrive_time = time.time() - 5 * 60  # 初始化为5分钟前
+        
+        # 定义状态机的状态
+        self.states = [
+            "moving_to_target",       # 向目标位置移动
+            "coarse_yaw_adjusting",   # 粗略偏航角调整
+            "fine_yaw_adjusting",     # 精细偏航角调整
+            "yaw_adjusting",          # 到达目标位置后的最终操作
+            "arrived_at_target",      # 到达目标位置
+        ]
+        
+        # 定义状态机的状态转移规则
+        self.transitions = [
+            {
+                "trigger": "update_status",
+                "source": "yaw_adjusting",
+                "dest": "arrived_at_target",
+                "conditions": "good_yaw",
+                "after": "arrived_stop_moving",
+            },
+            {
+                "trigger": "update_status",
+                "source": ["coarse_yaw_adjusting", "fine_yaw_adjusting", "moving_to_target", "yaw_adjusting"],
+                "dest": "yaw_adjusting",
+                "conditions": "good_position",
+                "after": "adjust_yaw",
+            },
+            {
+                "trigger": "update_status",
+                "source": ["arrived_at_target"],
+                "dest": "coarse_yaw_adjusting",
+                "conditions": "not_arrived",
+            },
+            {
+                "trigger": "update_status",
+                "source": ["moving_to_target", "coarse_yaw_adjusting"],
+                "dest": "coarse_yaw_adjusting",
+                "conditions": "need_coarse_yaw_adjustment",
+                "after": "coarse_yaw_adjust",
+            },
+            {
+                "trigger": "update_status",
+                "source": ["coarse_yaw_adjusting", "fine_yaw_adjusting", "moving_to_target"],
+                "dest": "moving_to_target",
+                "conditions": "dont_need_coarse_yaw_adjustment",
+                "after": "move_forward",
+            },
+            {
+                "trigger": "update_status",
+                "source": ["coarse_yaw_adjusting", "fine_yaw_adjusting"],
+                "dest": "fine_yaw_adjusting",
+                "conditions": "need_fine_yaw_adjustment",
+                "after": "fine_yaw_adjust",
+            },
+        ]
+        
+        # 初始化状态机
+        self.machine = Machine(
+            model=self,
+            states=self.states,
+            initial="moving_to_target",
+            transitions=self.transitions,
+        )
+        self.logger.debug(f"[Go Back to Field FSM] Initialized. Starting state: {self.state}")
+
+    def read_params(self):
+        """从配置中读取所有参数"""
+        self.min_dist = self._config.get("go_back_to_field").get("min_dist_m", 0.3)  # 到达目标位置的最小距离阈值（m）
+        self.coarse_yaw_threshold_degree = self._config.get("go_back_to_field").get("coarse_yaw_threshold_degree", 30)  # 粗略偏航调整阈值（度）
+        self.fine_yaw_start_threshold_degree = self._config.get("go_back_to_field").get("fine_yaw_start_threshold_degree", 20)  # 精细偏航开始阈值（度）
+        self.fine_yaw_end_threshold_degree = self._config.get("go_back_to_field").get("fine_yaw_end_threshold_degree", 5)  # 精细偏航结束阈值（度）
+        self.good_yaw_threshold_degree = self._config.get("go_back_to_field").get("good_yaw_threshold_degree", 10)  # 良好偏航阈值（度）
+        self.walk_vel_x = self._config.get("go_back_to_field").get("walk_vel_x", 0.3)  # 前进速度（m/s）
+        self.walk_vel_theta = self._config.get("go_back_to_field").get("walk_vel_theta", 0.3)  # 旋转速度（rad/s）
+        self.arrive_trust_time = self._config.get("go_back_to_field").get("arrive_trust_time", 5)  # 到达目标后信任时间（秒）
+        self.aim_x = self._config.get("go_back_to_field").get("aim_x", 0)  # 目标位置的 x 坐标（m）
+        self.aim_y = self._config.get("go_back_to_field").get("aim_y", 1)  # 目标位置的 y 坐标（m）
+        self.aim_yaw = self._config.get("go_back_to_field").get("aim_yaw", 0)  # 目标位置的偏航角（度）
+        self.obstacle_avoidance = self._config.get("go_back_to_field").get("obstacle_avoidance", False)
+
+    def need_coarse_yaw_adjustment(self):
+        """检查是否需要进行粗略偏航角调整"""
+        result = (self.go_back_to_field_dist > self.min_dist and 
+                  abs(self.go_back_to_field_yaw_diff) > self.coarse_yaw_threshold_degree)
+        self.logger.debug(f"[Go Back to Field] Need coarse yaw adjustment? {'Yes' if result else 'No'}")
+        return result
+
+    def need_fine_yaw_adjustment(self):
+        """检查是否需要进行精细偏航角调整"""
+        result = (self.min_dist <= self.go_back_to_field_dist < 3 * self.min_dist and 
+                  abs(self.go_back_to_field_yaw_diff) > self.fine_yaw_end_threshold_degree and 
+                  abs(self.go_back_to_field_yaw_diff) <= self.fine_yaw_start_threshold_degree)
+        self.logger.debug(f"[Go Back to Field] Need fine yaw adjustment? {'Yes' if result else 'No'}")
+        return result
+    
+    def dont_need_coarse_yaw_adjustment(self):
+        """检查是否不需要进行粗略偏航角调整"""
+        result = not self.need_coarse_yaw_adjustment()
+        self.logger.debug(f"[Go Back to Field] Don't need coarse yaw adjustment? {'Yes' if result else 'No'}")
+        return result
+
+    def good_position(self):
+        """检查是否到达目标位置"""
+        self.logger.debug(f"[Go Back to Field] go_back_to_field_dist: {self.go_back_to_field_dist}, min_dist: {self.min_dist}")
+        result = self.go_back_to_field_dist < self.min_dist
+        self.logger.debug(f"[Go Back to Field] Arrived at target? {'Yes' if result else 'No'}")
+        return result
+
+    def run(self, aim_x=0, aim_y=0, aim_yaw=0):
+        """状态机的主运行函数，控制机器人返回场地的整个流程"""
+        # if self.agent.receiver.game_state != 'STATE_READY':
+        #    self.agent.stop(0.5)
+        #    return
+        if self.state != "arrived_at_target":
+            yaw = np.radians(self.agent.get_self_yaw())  # 确保yaw是弧度制
+            print(f"[Go Back to Field FSM] Current yaw: {yaw:.2f} degrees, aim_yaw: {np.radians(aim_yaw):.2f} rad")
+            if abs(yaw) > np.pi / 2:
+                if yaw > 0:
+                    self.agent.move_head(0, np.pi - yaw)
+                else:
+                    self.agent.move_head(0, - np.pi - yaw)
+            else:
+                self.agent.move_head(0, - yaw)
+            # self.agent.move_head(inf, inf)
+        else:
+            self.agent.move_head(inf, inf)
+
+        self.agent.is_going_back_to_field = True
+        self.logger.debug("[Go Back to Field FSM] Starting to go back to field...")
+        # 优先使用传入的参数，其次从命令获取，最后使用默认值
+        self.aim_x = aim_x if aim_x != 0 else self.agent.get_command().get('data', {}).get('aim_x', self.aim_x)
+        self.aim_y = aim_y if aim_y != 0 else self.agent.get_command().get('data', {}).get('aim_y', self.aim_y)
+        self.aim_yaw = aim_yaw if aim_yaw != 0 else self.agent.get_command().get('data', {}).get('aim_yaw', self.aim_yaw)
+        self.update_go_back_to_field_status()
+        self.logger.debug(f"\n[Go Back to Field FSM] Current state: {self.state}")
+        self.logger.debug("[Go Back to Field FSM] Triggering 'update_status' transition")
+        self.machine.model.trigger("update_status")
+
+    def update_go_back_to_field_status(self):
+        """更新返回场地的状态参数"""
+        self.pos_x = self.agent.get_self_pos()[0]
+        self.pos_y = self.agent.get_self_pos()[1]
+        pos_yaw = self.agent.get_self_yaw()
+        self.go_back_to_field_dist = np.sqrt((self.pos_x - self.aim_x) ** 2 + (self.pos_y - self.aim_y) ** 2)
+        self.go_back_to_field_dir = np.arctan2(self.aim_y - self.pos_y, self.aim_x - self.pos_x) # 目标方向（弧度）
+        self.go_back_to_field_yaw_diff = np.degrees(
+            np.arctan2(
+                np.sin(self.go_back_to_field_dir - np.radians(pos_yaw)),
+                np.cos(self.go_back_to_field_dir - np.radians(pos_yaw)),
+            )
+        )
+        self.logger.debug(f"[Go Back to Field] aim_x: {self.aim_x}, aim_y: {self.aim_y}, aim_yaw: {self.aim_yaw}")
+        self.logger.debug(f"[Go Back to Field] pos_x: {self.pos_x}, pos_y: {self.pos_y}")
+        self.logger.debug(f"[Go Back to Field] Updated status: dist: {self.go_back_to_field_dist:.1f}, yaw_diff: {self.go_back_to_field_yaw_diff:.1f}°")
+
+    def move_forward(self):
+        """控制机器人向前移动"""
+        self.logger.debug("[Go Back to Field] Moving forward...")
+        if self.obstacle_avoidance:
+            # Check for obstacles and adjust y velocity accordingly
+            self.logger.debug("[CHASE BALL FSM] Using obstacle avoidance...")
+            x_vel, y_vel, theta_vel = self.agent.get_obstacle_avoidance_velocity()
+            if x_vel is None or x_vel > self.walk_vel_x:
+                x_vel = self.walk_vel_x
+            if theta_vel is None:
+                self.logger.warning(
+                    "[CHASE BALL FSM] Obstacle avoidance failed, using default theta velocity."
+                )
+                theta_vel = 0.0
+            if y_vel is None:
+                y_vel = 0.0
+        else:
+            # No obstacle avoidance, use default y velocity
+            theta_vel = 0.0
+            y_vel = 0.0
+            x_vel = self.walk_vel_x
+        self.agent.cmd_vel(x_vel, y_vel, theta_vel)
+
+    def coarse_yaw_adjust(self):
+        """进行粗略偏航角调整"""
+        self.logger.debug("[Go Back to Field] Starting coarse yaw adjustment...")
+        sgn = 1 if self.go_back_to_field_yaw_diff > 0 else -1
+        
+        if self.go_back_to_field_dist < self.min_dist:
+            return
+        
+        # 大角度调整（超过粗略阈值）
+        if abs(self.go_back_to_field_yaw_diff) > self.coarse_yaw_threshold_degree:
+            self.logger.debug(f"[Go Back to Field] Large yaw error ({self.go_back_to_field_yaw_diff:.1f}°), rotating {'' if sgn>0 else 'right'}...")
+            self.agent.cmd_vel(0, 0, sgn * self.walk_vel_theta)
+            self.last_rotate = sgn
+            time.sleep(0.2)
+
+    def good_yaw(self):
+        """检查是否朝向正确（目标yaw在允许范围内）"""
+        aim_yaw_diff = self.aim_yaw - self.agent.get_self_yaw()
+        result = abs(aim_yaw_diff) < self.good_yaw_threshold_degree
+        self.logger.debug(f"[Go Back to Field] Good yaw? {'Yes' if result else 'No'} (diff: {aim_yaw_diff:.1f}°)")
+        return result
+
+    def fine_yaw_adjust(self):
+        """进行精细偏航角调整（中低角度范围）"""
+        self.logger.debug("[Go Back to Field] Starting fine yaw adjustment...")
+        sgn = 1 if self.go_back_to_field_yaw_diff > 0 else -1
+        
+        if self.go_back_to_field_dist < self.min_dist:
+            return
+        
+        # 中等角度调整（精细阈值范围内）
+        if self.fine_yaw_end_threshold_degree < abs(self.go_back_to_field_yaw_diff) <= self.fine_yaw_start_threshold_degree:
+            self.logger.debug(f"[Go Back to Field] Medium yaw error ({self.go_back_to_field_yaw_diff:.1f}°), rotating {'' if sgn>0 else 'right'} slowly...")
+            self.agent.cmd_vel(0, 0, sgn * (self.walk_vel_theta))  # 较慢的旋转速度
+            self.last_rotate = sgn
+            time.sleep(0.2)
+
+    def adjust_yaw(self):
+        """到达目标位置后执行的操作，包括调整朝向和准备开始游戏"""
+        self.logger.debug("[Go Back to Field] Arrived at target. Performing yaw adjust...")
+        # self.agent.cmd_vel(0, 0, 0)
+        
+        aim_yaw_diff = self.aim_yaw - self.agent.get_self_yaw()
+        aim_yaw_diff = self.agent.angle_normalize(aim_yaw_diff / 180 * math.pi) / math.pi *180
+        if abs(aim_yaw_diff) > 160:  # 处理180度附近的环绕问题
+            self.logger.debug("[Go Back to Field] Correcting large yaw wrap-around...")
+            self.agent.cmd_vel(0, 0, self.aim_yaw_last_rotate * self.walk_vel_theta)
+        elif abs(aim_yaw_diff) > self.good_yaw_threshold_degree:  # 小角度精细调整
+            sgn = 1 if aim_yaw_diff > 0 else -1
+            self.logger.debug(f"[Go Back to Field] Final yaw adjustment ({aim_yaw_diff:.1f}°)...")
+            self.agent.cmd_vel(0, 0, sgn * (self.walk_vel_theta))  # 最慢旋转速度
+            self.aim_yaw_last_rotate = sgn
+        else:  # 达到良好状态
+            self.agent.cmd_vel(0, 0, 0)
+            self.logger.debug("[Go Back to Field] Finished going back to field. Ready to play.")
+            time.sleep(0.5)
+            self.agent.is_going_back_to_field = False
+            self.last_arrive_time = time.time()
+            self.logger.debug("[Go Back to Field FSM] Arrived at target!")
+
+    def not_arrived(self):
+        """检查是否未到达目标位置（考虑短暂信任时间避免抖动）"""
+        if time.time() - self.last_arrive_time < self.arrive_trust_time:
+            self.logger.debug("[Go Back to Field] Trusting recent arrival, not rechecking.")
+            return False
+        
+        result = not (self.go_back_to_field_dist < self.min_dist * 1.5 and self.good_yaw())
+        self.logger.debug(f"[Go Back to Field] Not arrived? {'Yes' if result else 'No'} (dist: {self.go_back_to_field_dist:.1f})")
+        return result
+
+    def arrived_stop_moving(self):
+        """到达目标位置后停止移动"""
+        self.logger.debug("[Go Back to Field] Stopping moving...")
+        self.agent.stop(0.5)
+        self.update_go_back_to_field_status()
+        self.last_arrive_time = time.time()
+        self.agent.move_head(inf, inf)

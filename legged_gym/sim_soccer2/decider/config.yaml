@@ -1,0 +1,192 @@
+id: 0
+team_id: 12
+color: "red" # red or blue
+
+# kick
+kick_key_is_y: true
+dribble_to_kick: 
+  S: [-2.3, 2.3]
+  M: [-3.3, 3.3]     # Old 'adult' value (for 14m field)
+  L: [-5.2, 5.2]     # Scaled for 22m field (Ratio ~0.47)
+kick_to_dribble: 
+  S: [-1.7, 1.7]
+  M: [-2.7, 2.7]     # Old 'adult' value
+  L: [-4.2, 4.2]     # Scaled for 22m field
+
+# field
+field_size:
+  S: [9.0, 6.0] 
+  M: [14.0, 9.0]
+  L: [22.0, 14.0]
+
+# initial position
+initial_pos:
+  x: 0
+  y: 0
+  theta: 0
+
+league: "M" # "S", "M", "L"
+sim_hz: 50.0  # simulation control frequency, <=0 means unlimited
+
+# ball
+close_to_ball_threshold: 0.5
+
+# velocities
+walk_vel_x: 0.5
+walk_vel_y: 0.5
+walk_vel_theta: 1
+max_walk_vel_x: 1.5
+max_walk_vel_y: 2.0
+max_walk_vel_theta: 3.0
+
+# networking
+server_ip: "192.168.9.105"
+server_port: 8002
+auto_find_server_ip: true
+auto_find_server_ip_listen_port: 8003
+auto_find_server_ip_token: "NjM5NWVkMSAgLQo"
+max_buffer_size: 1024
+offline_time: 5  # seconds
+start_walk_into_field_time: 0  # seconds
+
+# vision
+vision_size: [1280, 736]  # the size of photos used by vision
+pos_accuracy_add:
+  # the score 'add' to the self_pos_accuracy
+  # when these items appears in vision
+  "0": 0  # ballsel
+  "1": 10  # goalpost
+  "2": 0  # robot
+  "3": 5  # L-Intersection
+  "4": 5  # T-Intersection
+  "5": 5  # X-Intersection
+predict_ball_pos: true
+predict_ball_pos_in_map: true
+move_head_time_gap: 0.1  # second
+move_head_phase_time_gap: 0.8  # second
+ball_accuracy_integrated_factor: 0.1
+looking_at_ball_integrated: [0.1, 0.1]  # integrated arguments
+looking_at_ball_arguments:
+  - [0.4, 0.0, 0.2]  # P, I, D of head
+  - [0.4, 0.0, 0.2]  # P, I, D of neck
+self_pos_accuracy_critical: 0.0  # when accuracy is lower than this,
+# self_pos is considered lost
+ball_pos_accuracy_critical: 0.1  # when accuracy is lower than this,
+# ball is considered lost
+_ball_pos_accuracy_look_around: 0.5  # when accuracy is lower than this,
+# camera is looking around
+search_ball_head_angle:
+  - [0.0, -0.9]
+  - [0.9, 0.0]
+  - [0.0, 0.0]
+  - [0.9, 0.0]
+  - [0.0, 0.9]
+  - [0.9, 0.0]
+# camera is looking around
+camera_bias: 0.035
+
+# sundry
+if_can_kick: false
+
+obstacle_avoidance:
+  obstacle_max_distance: 4.0
+  obstacle_stop_distance: 1.0
+  obstacle_min_size: 0.1
+  safe_width: 0.4
+  safe_angle_degrees: 10
+
+# statemachines params
+dribble:
+  angle_to_ball_adjust_threshold_degree: 15
+  good_angle_to_goal_threshold_degree: 20
+  lost_angle_to_target_threshold_degree: 25
+  goal_center_bias_m: 0.5
+  adjust_pos_to_ball_vel_x: 0.5
+  backward_vel: 0.4
+  rotate_vel_theta: 0.7
+  horizontal_adjust_vel_y: 0.3  # 0.6
+  dribble_forward_vel_theta: 1 #0.5
+  adjust_angle_to_goal_vel_y: 1.0  #0.5
+  adjust_angle_to_goal_vel_theta: 0.7 #0.5
+  min_ball_distance_m: 0.2
+  max_ball_distance_m: 0.7
+  good_horizontal_position_to_ball_upper_threshold_m: 0.20
+  good_horizontal_position_to_ball_lower_threshold_m: 0.00
+  lost_ball_x_threshold_m: 0.10
+  lost_ball_distance_threshold_m: 0.9
+
+  # P-Control Dribble Parameters
+  kp_x: 1.5
+  kp_y: 1.5
+  kp_theta: 1.2
+  dist_setup: 0.45      # Distance to maintain when not aligned
+  dist_dribble: -0.5    # Distance to push ball (negative means 'inside' ball/forced contact)
+  align_threshold_deg: 15.0  # Degrees within which we switch to 'push' mode
+  max_vel_linear: 1.0
+  min_push_vel: 0.5           # Minimum forward velocity in PUSH mode
+  orbit_efficiency: 0.8 # scaler for tangent velocity when orbiting
+  dribble_0_y: 7
+  dribble_forward_vel_y: 1 # 0.5
+  camera_bias: 0.035  # camera bias in x direction
+  blind_dribble_thres_percent: 1.0
+  not_lost_ball_min_ball_y: 0.4
+  moonwalk_vel_ratio: 0.20
+  obstacle_avoidance: false
+find_ball:
+  angle_threshold_degrees: 10
+  rotation_vel_theta: 1
+  walk_vel_x: 1
+  walk_vel_theta: 1
+  rotation_timeout_seconds: 10
+  protection_pose_duration: 0.5
+go_back_to_field:
+  aim_x: 1.5
+  aim_y: 2.0
+  aim_yaw: 0
+  min_dist: 1.0
+  coarse_yaw_threshold_degree: 30
+  fine_yaw_start_threshold_degree: 20
+  fine_yaw_end_threshold_degree: 5
+  good_yaw_threshold_degree: 10
+  walk_vel_x: 0.5
+  walk_vel_theta: 1
+  arrive_trust_time: 20
+  obstacle_avoidance: true
+chase:
+  close_angle_threshold_rad: 1.2
+  walk_vel_x: 1
+  walk_vel_theta: 2
+  default_chase_distance: 1.0
+  obstacle_avoidance: true
+kick:
+  good_angle_threshold_degree: 10
+  really_bad_angle_threshold_degree: 30
+  horizontal_position_lower_threshold_m: -0.11
+  horizontal_position_upper_threshold_m: 0.11
+  min_kick_y_distance_m: 0.12
+  max_kick_y_distance_m: 0.17
+  lost_ball_distance_threshold_m: 1.0
+  forward_vel: 0.2
+  back_vel: 0.2
+  lateral_vel: 0.3
+  rotate_vel_theta: 0.5
+  horizontal_adjust_forward_vel: 0.1
+  camera_bias: 0.035
+  moonwalk_vel_ratio: 0.25
+  blind_kick_thres_percent: 1.0
+goalkeeper:
+  safe_area_threshold: -1
+  close_to_ball_threshold: 0.5
+  close_to_our_goal_threshold: 2.0
+  rotate_vel_theta: 1.0
+  walk_vel_x: 1.0
+  walk_vel_y: 1.0
+  ball_acceleration: 0.6
+  no_saving_area_width_m: 0.0
+  unreachable_area_lower_bound_m: 2.5
+  unreachable_area_y_distance_m: 6
+  early_time: 5.0
+  close_to_ball_threshold_y_m: 0.5
+  close_to_ball_threshold_x_m: 0.5
+  ignore_ball_vel: 5.0
+  activate_save: false

@@ -1,0 +1,138 @@
+{
+    "field": {
+        "preset": "custom",
+        "_comment": "Playable field (white lines) dimensions in meters",
+        "length": 9.0,
+        "width": 6.0,
+        "goal": {
+            "_comment": "Goal dimensions in meters (for referee/overlay). procedural_goals: add MuJoCo box net posts in code; set false when world mesh already includes goals (e.g. Soccer_field).",
+            "depth": 1.0,
+            "width": 1.9,
+            "height": 1.8,
+            "post_radius": 0.05,
+            "procedural_goals": false
+        },
+        "markings": {
+            "_comment": "White line layout on top of pitch",
+            "enabled": true,
+            "line_width": 0.05,
+            "line_height": 0.002,
+            "color": [
+                1.0,
+                1.0,
+                1.0,
+                1.0
+            ],
+            "field_length": 9.0,
+            "field_width": 6.0,
+            "goal_area_depth": 1.0,
+            "goal_area_width": 3.0,
+            "penalty_area_depth": 2.0,
+            "penalty_area_width": 4.0,
+            "penalty_spot_distance": 1.5,
+            "center_circle_diameter": 1.5
+        },
+        "referee": {
+            "_comment": "Rule checking area for goal-kick release",
+            "goalie_area_depth": 1.0,
+            "goalie_area_width": 3.0
+        },
+        "outer_floor": {
+            "_comment": "Outer green planes around playable field",
+            "enabled": true,
+            "margin_ratio": 0.0,
+            "min_margin": 1.0,
+            "color": [
+                0.18,
+                0.45,
+                0.18,
+                1.0
+            ],
+            "collision": false
+        }
+    },
+    "teams": {
+        "red": {
+            "count": 7,
+            "robot_type": "k1",
+            "spawn_positions": [
+                [
+                    -3.6,
+                    3.2,
+                    -1.57
+                ],
+                [
+                    -2.4,
+                    3.2,
+                    -1.57
+                ],
+                [
+                    -1.2,
+                    3.2,
+                    -1.57
+                ],
+                [
+                    0.0,
+                    3.2,
+                    -1.57
+                ],
+                [
+                    1.2,
+                    3.2,
+                    -1.57
+                ],
+                [
+                    2.4,
+                    3.2,
+                    -1.57
+                ],
+                [
+                    3.6,
+                    3.2,
+                    -1.57
+                ]
+            ]
+        },
+        "blue": {
+            "count": 7,
+            "robot_type": "k1",
+            "spawn_positions": [
+                [
+                    -3.6,
+                    -3.2,
+                    1.57
+                ],
+                [
+                    -2.4,
+                    -3.2,
+                    1.57
+                ],
+                [
+                    -1.2,
+                    -3.2,
+                    1.57
+                ],
+                [
+                    0.0,
+                    -3.2,
+                    1.57
+                ],
+                [
+                    1.2,
+                    -3.2,
+                    1.57
+                ],
+                [
+                    2.4,
+                    -3.2,
+                    1.57
+                ],
+                [
+                    3.6,
+                    -3.2,
+                    1.57
+                ]
+            ]
+        }
+    }
+}

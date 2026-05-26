@@ -1,0 +1,25 @@
+[project]
+name = "motrix-lab"
+version = "0.3.0"
+description = "A general-purpose machine learning architecture designed for robot training"
+authors = [{ name = "Motphys", email = "developers@motphys.com" }]
+requires-python = "==3.10.*"
+
+[project.optional-dependencies]
+docs = [
+    "sphinx",
+    "autodocsumm",
+    "pydata-sphinx-theme",
+    "myst-parser",
+    "sphinx-copybutton",
+    "sphinx-subfigure",
+    "sphinxcontrib-video",
+    "sphinx-togglebutton",
+    "sphinx-design",
+]
+
+[tool.uv.workspace]
+members = ["motrix_envs", "motrix_rl"]
+
+[tool.uv]
+package = false

@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gym Environment Render</title>
+    <script src="https://cdn.socket.io/4.3.2/socket.io.min.js"></script>
+</head>
+
+<body>
+    <div class="main-container">
+        <!-- Left Panel: Video -->
+        <div class="left-panel">
+            <div id="video-container">
+                <img id="video" src="" alt="Video Feed" />
+            </div>
+            <div style="text-align: center; color: #555;">
+                <p>Status: <span id="status">Connected</span></p>
+                <p style="font-size: 12px; margin-top: -8px;">
+                    Last Msg: <span id="msg-time">-</span> |
+                    ID: <span id="msg-id">-</span> |
+                    Src: <span id="msg-src">-</span>
+                </p>
+            </div>
+        </div>
+
+        <!-- Right Panel: Controls -->
+        <div class="right-panel">
+
+            <!-- Minimap First for easy access -->
+            <div class="control-section">
+                <h3>Interactive Map</h3>
+                <p style="font-size: 12px; margin-top: -8px;">Drag entities to teleport</p>
+                <div class="control-row" style="justify-content: center;">
+                    <canvas id="minimap" width="400" height="250"></canvas>
+                </div>
+                <div class="control-row" style="font-size: 12px;">
+                    <p><strong>Legend:</strong> ⚪Ball, 🔴Red, 🔵Blue</p>
+                </div>
+                <div class="control-row" style="font-size: 12px; margin-top: 5px;">
+                    <label><input type="checkbox" id="sync-from-sim" checked> Sync positions from sim</label>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Camera Views</h3>
+                <div class="control-row" style="flex-wrap: wrap;">
+                    <button class="button" onclick="sendCameraPreset('Top')">Top</button>
+                    <button class="button" onclick="sendCameraPreset('Side')">Side</button>
+                    <button class="button" onclick="sendCameraPreset('Diagonal')">Diag</button>
+                    <button class="button" onclick="sendCameraPreset('Goal_Left')">L-Goal</button>
+                    <button class="button" onclick="sendCameraPreset('Goal_Right')">R-Goal</button>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Match Settings</h3>
+                <div class="control-row">
+                    <label>Red:</label> <input type="number" id="red-count" class="input-box" value="3" min="0" max="7"
+                        style="width: 40px;">
+                    <label>Blue:</label> <input type="number" id="blue-count" class="input-box" value="3" min="0"
+                        max="7" style="width: 40px;">
+                    <span style="font-size: 11px; color: #999;">(Max 7v7)</span>
+                </div>
+                <div class="control-row" style="margin-top: 5px;">
+                    <button class="button" onclick="setSpawnPoints()"
+                        title="Set current map positions as spawn points (will apply on Reset)">Set Spawn
+                        Points</button>
+                    <button class="button" onclick="sendResetEnv()" style="background-color: #28a745;">Reset</button>
+                </div>
+                <div id="spawn-status" style="font-size: 11px; color: #666; margin-top: 5px;"></div>
+                <script>
+                    let savedSpawnPositions = {};
+
+                    function setSpawnPoints() {
+                        savedSpawnPositions = {};
+                        const rVal = parseInt(document.getElementById('red-count').value);
+                        const redCount = isNaN(rVal) ? 3 : rVal;
+
+                        const bVal = parseInt(document.getElementById('blue-count').value);
+                        const blueCount = isNaN(bVal) ? 3 : bVal;
+
+                        entities.forEach(ent => {
+                            if (ent.name !== 'ball') {
+                                // Filter by count
+                                const match = ent.name.match(/([rb])p(\d+)/);
+                                if (match) {
+                                    const team = match[1];
+                                    const idx = parseInt(match[2]);
+                                    const maxCount = team === 'r' ? redCount : blueCount;
+                                    if (idx < maxCount) {
+                                        savedSpawnPositions[ent.name] = [ent.x, ent.y, ent.theta || 0];
+                                    }
+                                }
+                            }
+                        });
+                        // Send to backend for storage
+                        socket.emit('set_initial_positions', savedSpawnPositions);
+                        document.getElementById('spawn-status').textContent =
+                            `✓ Saved ${Object.keys(savedSpawnPositions).length} spawn points (${redCount}v${blueCount})`;
+                    }
+                </script>
+            </div>
+
+            <div class="control-section">
+                <h3>Env Control</h3>
+                <div class="control-row" style="flex-wrap: wrap;">
+                    <button class="button" onclick="sendResetEnv()">Reset</button>
+                    <button class="button" onclick="sendNextEnv()">Next Env</button>
+                    <button class="button" onclick="switchDebug()">Debug Vis</button>
+                </div>
+                <div class="control-row">
+                    <input type="number" id="env-id-input" placeholder="Env ID" class="input-box" style="width: 60px;">
+                    <button class="button" onclick="sendEnvID()">Set ID</button>
+                </div>
+            </div>
+
+            <div class="control-section">
+                <h3>Velocity Command Range</h3>
+                <div class="control-row">
+                    <label>X:</label> <input type="number" id="vx-min" placeholder="min" class="input-box" value="0">
+                    <input type="number" id="vx-max" placeholder="max" class="input-box" value="0">
+                </div>
+                <div class="control-row">
+                    <label>Y:</label> <input type="number" id="vy-min" placeholder="min" class="input-box" value="0">
+                    <input type="number" id="vy-max" placeholder="max" class="input-box" value="0">
+                </div>
+                <div class="control-row">
+                    <label>Z:</label> <input type="number" id="vz-min" placeholder="min" class="input-box" value="0">
+                    <input type="number" id="vz-max" placeholder="max" class="input-box" value="0">
+                </div>
+                <button class="button" onclick="sendVelocityCommand()" style="width: 100%;">Apply Velocity</button>
+            </div>
+
+            <div class="control-section">
+                <h3>Manual Camera</h3>
+                <button class="button" onclick="toggleManualCam()"
+                    style="width: 100%; background-color: #6c757d;">Toggle Manual Controls</button>
+                <div id="manual-cam-controls" style="display: none; margin-top: 10px;">
+                    <div class="control-row"><label>Pos:</label> <input id="viewer_p_x" placeholder="x"
+                            class="input-box"> <input id="viewer_p_y" placeholder="y" class="input-box"> <input
+                            id="viewer_p_z" placeholder="z" class="input-box"></div>
+                    <button class="button" onclick="sendViewerPoint()">Set Pos</button>
+                    <div class="control-row"><label>Look:</label> <input id="viewer_l_x" placeholder="x"
+                            class="input-box"> <input id="viewer_l_y" placeholder="y" class="input-box"> <input
+                            id="viewer_l_z" placeholder="z" class="input-box"></div>
+                    <button class="button" onclick="sendViewerLookAt()">Set LookAt</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Establish SocketIO connection with the server
+        const socket = io();
+
+        // Listen for 'new_frame' event from the server
+        socket.on('new_frame', (data) => {
+            const img = document.getElementById('video');
+            requestAnimationFrame(() => {
+                img.src = 'data:image/jpeg;base64,' + data.image;
+            });
+        });
+
+        function sendNextEnv() { socket.emit('next_env'); };
+        function sendResetEnv() { socket.emit('reset_env'); };
+        function switchDebug() { socket.emit('switch_debug'); };
+
+        function sendEnvID() {
+            const input = document.getElementById('env-id-input');
+            const envID = parseInt(input.value);
+            if (!isNaN(envID)) {
+                socket.emit('set_env_id', { id: envID });
+                console.log("Sent env id:", envID);
+            } else {
+                alert("Please enter a valid number");
+            }
+        };
+
+        function sendVelocityCommand() {
+            const vx = [parseFloat(document.getElementById('vx-min').value || 0), parseFloat(document.getElementById('vx-max').value || 0)];
+            const vy = [parseFloat(document.getElementById('vy-min').value || 0), parseFloat(document.getElementById('vy-max').value || 0)];
+            const vz = [parseFloat(document.getElementById('vz-min').value || 0), parseFloat(document.getElementById('vz-max').value || 0)];
+            socket.emit('set_velocity_range', { vx, vy, vz });
+            console.log("Sent set_velocity_range:", { vx, vy, vz });
+        };
+
+        function sendViewerPoint() {
+            const point = [parseFloat(document.getElementById('viewer_p_x').value), parseFloat(document.getElementById('viewer_p_y').value), parseFloat(document.getElementById('viewer_p_z').value)];
+            socket.emit('set_viewer_point', { point });
+        };
+
+        function sendViewerLookAt() {
+            const point = [parseFloat(document.getElementById('viewer_l_x').value), parseFloat(document.getElementById('viewer_l_y').value), parseFloat(document.getElementById('viewer_l_z').value)];
+            socket.emit('set_viewer_look_at', { point });
+        }
+
+        function sendCameraPreset(presetName) {
+            console.log("Sending camera preset:", presetName);
+            socket.emit('set_camera_preset', { preset: presetName });
+        }
+
+        function toggleManualCam() {
+            const el = document.getElementById('manual-cam-controls');
+            el.style.display = el.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // --- Minimap Logic ---
+        const canvas = document.getElementById('minimap');
+        const ctx = canvas.getContext('2d');
+
+        // Field Settings (Scaled for smaller canvas)
+        const FIELD_WIDTH_M = 16.0;
+        const FIELD_HEIGHT_M = 10.0;
+        const SCALE_X = canvas.width / FIELD_WIDTH_M;
+        const SCALE_Y = canvas.height / FIELD_HEIGHT_M;
+        const CENTER_X = canvas.width / 2;
+        const CENTER_Y = canvas.height / 2;
+
+        // Entities State - will be updated based on count inputs
+        let entities = [
+            { name: 'ball', x: 0, y: 0, theta: 0, r: 6, color: 'white' }
+        ];
+
+        // Initialize entities based on count inputs
+        function initEntities() {
+            const rVal = parseInt(document.getElementById('red-count')?.value);
+            const redCount = isNaN(rVal) ? 3 : rVal;
+            const bVal = parseInt(document.getElementById('blue-count')?.value);
+            const blueCount = isNaN(bVal) ? 3 : bVal;
+
+            entities = [{ name: 'ball', x: 0, y: 0, theta: 0, r: 6, color: 'white' }];
+
+            for (let i = 0; i < redCount; i++) {
+                entities.push({
+                    name: `robot_rp${i}`,
+                    x: -2.0,
+                    y: (i - (redCount - 1) / 2) * 1.5,
+                    theta: 0,
+                    r: 8,
+                    color: 'red'
+                });
+            }
+            for (let i = 0; i < blueCount; i++) {
+                entities.push({
+                    name: `robot_bp${i}`,
+                    x: 2.0,
+                    y: (i - (blueCount - 1) / 2) * 1.5,
+                    theta: 3.14,
+                    r: 8,
+                    color: 'blue'
+                });
+            }
+            drawMinimap();
+        }
+
+        // Update entities when count changes
+        document.addEventListener('DOMContentLoaded', () => {
+            initEntities();
+            document.getElementById('red-count')?.addEventListener('change', initEntities);
+            document.getElementById('blue-count')?.addEventListener('change', initEntities);
+        });
+
+        let draggingEntity = null;
+        let isRotating = false;
+
+        function toScreen(x_m, y_m) {
+            return { x: CENTER_X + x_m * SCALE_X, y: CENTER_Y - y_m * SCALE_Y };
+        }
+
+        function toSim(screen_x, screen_y) {
+            return { x: (screen_x - CENTER_X) / SCALE_X, y: (CENTER_Y - screen_y) / SCALE_Y };
+        }
+
+        function drawMinimap() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            // Draw field 
+            ctx.strokeStyle = "rgba(255, 255, 255, 0.5)"; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(CENTER_X, 0); ctx.lineTo(CENTER_X, canvas.height); ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(0, CENTER_Y); ctx.lineTo(canvas.width, CENTER_Y); ctx.stroke();
+
+            // Draw Entities
+            entities.forEach(ent => {
+                const pos = toScreen(ent.x, ent.y);
+                ctx.fillStyle = ent.color; ctx.beginPath(); ctx.arc(pos.x, pos.y, ent.r, 0, Math.PI * 2); ctx.fill();
+                ctx.strokeStyle = 'black'; ctx.lineWidth = 1; ctx.stroke();
+
+                // Draw Direction Indicator (Arrow)
+                const arrowLen = ent.r + 8;
+                // Minimap coordinate system: Y is up (screen Y is down), passing theta directly.
+                // Wait, screen Y increases downwards. Sim Y increases upwards.
+                // So Sim Theta 0 (East) -> Screen 0. 
+                // Sim Theta PI/2 (North) -> Screen -PI/2?
+                // toSim Y flips sign. 
+                // Let's assume standard math: x = r cos(th), y = r sin(th).
+                // Screen X = C + x*S. Screen Y = C - y*S.
+                const tailX = pos.x;
+                const tailY = pos.y;
+                const headSimX = ent.x + Math.cos(ent.theta) * (arrowLen / SCALE_X);
+                const headSimY = ent.y + Math.sin(ent.theta) * (arrowLen / SCALE_Y);
+                const headPos = toScreen(headSimX, headSimY);
+
+                ctx.strokeStyle = 'yellow'; ctx.lineWidth = 2;
+                ctx.beginPath(); ctx.moveTo(tailX, tailY); ctx.lineTo(headPos.x, headPos.y); ctx.stroke();
+
+                // Label
+                ctx.fillStyle = 'black'; ctx.font = '10px Arial'; ctx.fillText(ent.name, pos.x - 15, pos.y - ent.r - 2);
+            });
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            // If shift held, we might be starting rotation? 
+            // Better logic: Click entity -> Drag.
+            // If Shift held while dragging -> Rotate.
+
+            for (let ent of entities) {
+                const pos = toScreen(ent.x, ent.y);
+                const dist = Math.sqrt((mouseX - pos.x) ** 2 + (mouseY - pos.y) ** 2);
+                if (dist <= ent.r * 2.0) {
+                    draggingEntity = ent;
+                    break;
+                }
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (draggingEntity) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseX = e.clientX - rect.left;
+                const mouseY = e.clientY - rect.top;
+
+                if (e.shiftKey) {
+                    // Rotating mode
+                    isRotating = true;
+                    // Calculate angle from entity center to mouse
+                    const entScreen = toScreen(draggingEntity.x, draggingEntity.y);
+                    const dx = mouseX - entScreen.x;
+                    const dy = mouseY - entScreen.y;
+                    // Screen coords: Y down. Sim coords: Y up.
+                    // Angle in screen: atan2(dy, dx).
+                    // We need to map this to Sim Theta.
+                    // dx > 0 -> Sim X > 0. dy > 0 -> Sim Y < 0.
+                    // So sim_dy = -dy.
+                    const sim_dx = dx;
+                    const sim_dy = -dy;
+                    draggingEntity.theta = Math.atan2(sim_dy, sim_dx);
+                } else {
+                    // Translating mode
+                    isRotating = false;
+                    const simPos = toSim(mouseX, mouseY);
+                    draggingEntity.x = simPos.x; draggingEntity.y = simPos.y;
+                }
+                drawMinimap();
+            }
+        });
+
+        canvas.addEventListener('mouseup', (e) => {
+            if (draggingEntity) {
+                console.log(`Teleporting ${draggingEntity.name} to (${draggingEntity.x.toFixed(2)}, ${draggingEntity.y.toFixed(2)}, th=${draggingEntity.theta.toFixed(2)})`);
+                // Omit Z to let backend use default/current height
+                socket.emit('teleport_entity', {
+                    name: draggingEntity.name,
+                    x: draggingEntity.x,
+                    y: draggingEntity.y,
+                    theta: draggingEntity.theta
+                });
+                draggingEntity = null;
+                isRotating = false;
+            }
+        });
+
+        // --- Robot States Sync from Backend ---
+        socket.on('robot_states', function (states) {
+            // Handle Metadata first
+            if (states._last_msg) {
+                const msg = states._last_msg;
+                // Format timestamp to relative or readable time
+                // Assuming timestamp is epoch seconds
+                const date = new Date(msg.timestamp * 1000);
+                const timeStr = date.toLocaleTimeString().split(' ')[0]; // HH:MM:SS
+
+                document.getElementById('msg-time').textContent = timeStr;
+                document.getElementById('msg-id').textContent = msg.id;
+                document.getElementById('msg-src').textContent = msg.source;
+
+                // Cleanup so it doesn't mess with loop
+                delete states._last_msg;
+            }
+
+            const syncEnabled = document.getElementById('sync-from-sim').checked;
+            if (!syncEnabled || draggingEntity) return;  // Don't sync while dragging
+
+            for (const [name, state] of Object.entries(states)) {
+                // Find or create entity
+                let entity = entities.find(e => e.name === name);
+                if (!entity && state.active) {
+                    // Create new entity for active robots
+                    const color = state.team === 'red' ? 'red' : (state.team === 'blue' ? 'blue' : 'white');
+                    entity = { name: name, x: state.x, y: state.y, theta: state.yaw || 0, r: name === 'ball' ? 6 : 8, color: color };
+                    entities.push(entity);
+                }
+                if (entity) {
+                    entity.x = state.x;
+                    entity.y = state.y;
+                    entity.theta = state.yaw || 0;
+                    // Mark inactive robots (off-field) with lower opacity by setting a flag
+                    entity.active = state.active;
+                }
+            }
+            drawMinimap();
+        });
+
+        drawMinimap();
+    </script>
+
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #e9ecef;
+        }
+
+        .main-container {
+            display: flex;
+            height: 100vh;
+            width: 100vw;
+            overflow: hidden;
+        }
+
+        /* Left Panel */
+        .left-panel {
+            flex: 2;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background-color: #000;
+            padding: 10px;
+        }
+
+        #video-container {
+            width: 100%;
+            height: 95%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #video {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.8);
+        }
+
+        /* Right Panel */
+        .right-panel {
+            flex: 1;
+            min-width: 320px;
+            max-width: 450px;
+            background-color: #f8f9fa;
+            padding: 20px;
+            overflow-y: auto;
+            box-shadow: -2px 0 5px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .control-section {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+
+        .control-section h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            border-bottom: 2px solid #e9ecef;
+            padding-bottom: 5px;
+            color: #495057;
+            font-size: 1.1em;
+        }
+
+        .control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .button {
+            flex: 1;
+            padding: 8px 12px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-weight: 500;
+            font-size: 0.9em;
+            white-space: nowrap;
+        }
+
+        .button:hover {
+            background-color: #0056b3;
+        }
+
+        .button:active {
+            transform: translateY(1px);
+        }
+
+        .input-box {
+            padding: 6px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+            width: 50px;
+            text-align: center;
+        }
+
+        canvas {
+            background-color: #4CAF50;
+            border-radius: 4px;
+            border: 2px solid #2e7d32;
+            cursor: crosshair;
+            touch-action: none;
+            width: 100%;
+            max-width: 400px;
+        }
+    </style>
+</body>
+
+</html>

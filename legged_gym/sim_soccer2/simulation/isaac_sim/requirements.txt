@@ -1,0 +1,11 @@
+# Simulation dependencies
+flask
+flask_socketio
+numpy
+gym
+Pillow
+setuptools
+cli_args
+
+# Remote communication
+pyzmq

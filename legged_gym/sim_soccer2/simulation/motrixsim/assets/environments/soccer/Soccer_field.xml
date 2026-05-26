@@ -1,0 +1,127 @@
+<mujoco>
+  <compiler autolimits="true" angle="degree" assetdir="assets"/>
+  <visual>
+    <headlight ambient="0.0 0.0 0.0" diffuse="0.0 0.0 0.0" specular="0.0 0.0 0.0"/>
+  </visual>
+  <asset>
+    <texture type="2d" colorspace="sRGB" name="Robot_Footballstadium" file="Robot_Footballstadium.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_Floor" file="Robot_Floor.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_AD" file="Robot_AD.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_Football" file="Robot_Football.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_Scoreboard" file="Robot_Scoreboard.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_Scoreboard_emit" file="Robot_Scoreboard_emit.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_NET" file="Robot_NET.png"/>
+    <texture type="2d" colorspace="sRGB" name="Robot_Footballstadium_emit" file="Robot_Footballstadium_emit.png"/>
+    <material name="Material #151" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 1.0" reflectance="0.5" roughness="0.5" metallic="0.0">
+      <layer texture="Robot_Footballstadium" role="rgb"/>
+    </material>
+    <material name="Material #124" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 1.0" reflectance="0.5" roughness="0.5" metallic="0.0">
+      <layer texture="Robot_Floor" role="rgb"/>
+    </material>
+    <material name="Material #147" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 1.0" reflectance="0.5" roughness="0.5" metallic="0.0">
+      <layer texture="Robot_AD" role="rgb"/>
+    </material>
+    <material name="Material #149" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 1.0" reflectance="0.5" roughness="0.5" metallic="0.0">
+      <layer texture="Robot_Football" role="rgb"/>
+    </material>
+    <material name="Material #127" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 1.0" reflectance="0.5" roughness="0.5" metallic="0.0" emission="1.0 1.0 1.0 1.0" emissionintensity="2.0">
+      <layer texture="Robot_Scoreboard" role="rgb"/>
+      <layer texture="Robot_Scoreboard_emit" role="emissive"/>
+    </material>
+    <material name="Material #121" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 0.8999999761581421" reflectance="0.5" roughness="0.5" metallic="0.0" texuniform="true" texrepeat="4.0 4.0">
+      <layer texture="Robot_NET" role="rgba"/>
+    </material>
+    <material name="Material #144" rgba="0.9999999999999999 0.9999999999999999 0.9999999999999999 1.0" reflectance="0.5" roughness="0.6000000238418579" metallic="0.0" emission="1.0 1.0 1.0 1.0" emissionintensity="2.0">
+      <layer texture="Robot_Footballstadium" role="rgb"/>
+      <layer texture="Robot_Footballstadium_emit" role="emissive"/>
+    </material>
+    <mesh name="Robot_Goal" file="Robot_Goal.obj"/>
+    <mesh name="Robot_Floor" file="Robot_Floor.obj"/>
+    <mesh name="Robot_AD" file="Robot_AD.obj"/>
+    <mesh name="Robot_Football" file="Robot_Football.obj"/>
+    <mesh name="Robot_Scoreboard" file="Robot_Scoreboard.obj"/>
+    <mesh name="Robot_NET" file="Robot_NET.obj"/>
+    <mesh name="Robot_LED" file="Robot_LED.obj"/>
+    <mesh name="Robot_Footballstadium" file="Robot_Footballstadium.obj"/>
+    <mesh name="Corner_Flag" file="Corner_Flag.obj"/>
+  </asset>
+  <worldbody>
+    <light name="LIT_Spot" pos="-5.257499694824219 3.562469005584717 3.8595826625823975" dir="0.6123724579811096 -0.6123724579811096 -0.4999999701976776" type="spot" diffuse="1.0 1.0 1.0" intensity="10867.14399363564" range="40.0" cutoff="42.49999833675809" innerangle="36.12499833292465" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_001.004" pos="5.257500171661377 -3.562469959259033 3.8595826625823975" dir="-0.6123724579811096 0.6123724579811096 -0.4999999701976776" type="spot" diffuse="1.0 1.0 1.0" intensity="10867.14399363564" range="40.0" cutoff="42.49999833675809" innerangle="36.12499833292465" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_002" pos="5.257500171661377 3.562469005584717 3.8595826625823975" dir="-0.6123724579811096 -0.6123724579811096 -0.4999999701976776" type="spot" diffuse="1.0 1.0 1.0" intensity="10867.14399363564" range="40.0" cutoff="42.49999833675809" innerangle="36.12499833292465" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_003" pos="-5.257500171661377 -3.562469959259033 3.8595826625823975" dir="0.6123724579811096 0.6123724579811096 -0.4999999701976776" type="spot" diffuse="1.0 1.0 1.0" intensity="10867.14399363564" range="40.0" cutoff="42.49999833675809" innerangle="36.12499833292465" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_001" pos="-7.476397514343262 1.9972071647644043 3.6919474601745605" dir="0.963287353515625 -0.2047530561685562 -0.17364822328090668" type="spot" diffuse="1.0 1.0 1.0" intensity="21734.28798727128" range="40.0" cutoff="60.000001669652114" innerangle="51.00000106157642" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_001_001" pos="-7.476397514343262 -1.9972081184387207 3.6919474601745605" dir="0.963287353515625 0.2047530561685562 -0.17364822328090668" type="spot" diffuse="1.0 1.0 1.0" intensity="21734.28798727128" range="40.0" cutoff="60.000001669652114" innerangle="51.00000106157642" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_001_002" pos="7.4763994216918945 1.9972071647644043 3.6919474601745605" dir="-0.963287353515625 -0.2047530561685562 -0.17364822328090668" type="spot" diffuse="1.0 1.0 1.0" intensity="21734.28798727128" range="40.0" cutoff="60.000001669652114" innerangle="51.00000106157642" castshadow="true" mode="fixed"/>
+    <light name="LIT_Spot_001_003" pos="7.4763994216918945 -1.9972081184387207 3.6919474601745605" dir="-0.963287353515625 0.2047530561685562 -0.17364822328090668" type="spot" diffuse="1.0 1.0 1.0" intensity="21734.28798727128" range="40.0" cutoff="60.000001669652114" innerangle="51.00000106157642" castshadow="true" mode="fixed"/>
+    <geom name="GEO_Robot_Goal" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_Goal" material="Material #151" contype="0" conaffinity="0"/>
+    <geom name="GEO_Robot_Floor" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_Floor" material="Material #124" contype="0" conaffinity="0"/>
+    <geom name="GEO_Robot_AD" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_AD" material="Material #147" contype="0" conaffinity="0"/>
+    <geom name="GEO_Robot_Scoreboard" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_Scoreboard" material="Material #127" contype="0" conaffinity="0"/>
+    <geom name="GEO_Robot_NET" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_NET" material="Material #121" contype="0" conaffinity="0"/>
+    <geom name="GEO_Robot_LED" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_LED" material="Material #144" contype="0" conaffinity="0"/>
+    <geom name="GEO_Robot_Footballstadium" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_Footballstadium" material="Material #144" contype="0" conaffinity="0"/>
+    <geom name="COL_Collider" pos="0.0 0.0 0.014369922690093517" quat="1.0 0.0 0.0 0.0" type="box" size="6.0 4.5 0.009999999776482582" group="3"/>
+    <geom name="COL_Cube" pos="-0.013669848442077637 3.847886562347412 0.29789090156555176" quat="1.0 0.0 0.0 0.0" type="box" size="4.367038249969482 0.025640010833740234 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_001" pos="0.0035172700881958008 -3.9452831745147705 0.29848408699035645" quat="1.0 0.0 0.0 0.0" type="box" size="4.367038249969482 0.025640010833740234 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_002" pos="5.543219566345215 -0.048734188079833984 0.2978677749633789" quat="1.0 0.0 0.0 0.0" type="box" size="0.018661975860595703 2.274294376373291 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_003" pos="-5.553401947021484 -0.048734188079833984 0.2978677749633789" quat="1.0 0.0 0.0 0.0" type="box" size="0.018661975860595703 2.274294376373291 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_004" pos="5.505679130554199 2.580112934112549 0.2978910207748413" quat="0.998615026473999 0.0 0.0 0.05261220782995224" type="box" size="0.018661975860595703 0.3584986925125122 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_005" pos="5.3816351890563965 3.1466293334960938 0.2978910207748413" quat="0.9813403487205505 0.0 0.0 0.19227883219718933" type="box" size="0.018661973997950554 0.23225754499435425 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_006" pos="4.996574401855469 3.657963752746582 0.2978910207748413" quat="0.8841893672943115 0.0 0.0 0.4671286642551422" type="box" size="0.018661975860595703 0.1792493462562561 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_007" pos="4.606194972991943 3.7983238697052 0.2978910207748413" quat="0.7639055848121643 0.0 0.0 0.6453279852867126" type="box" size="0.018661973997950554 0.25326916575431824 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_008" pos="5.218405246734619 3.4592020511627197 0.2978910207748413" quat="0.9469920992851257 0.0 0.0 0.32125675678253174" type="box" size="0.018661977723240852 0.12827935814857483 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_009" pos="-5.515832901000977 -2.6775097846984863 0.2984839677810669" quat="0.05261237174272537 -0.0 -0.0 -0.998615026473999" type="box" size="0.018661973997950554 0.3584986627101898 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_010" pos="-5.391788005828857 -3.2440261840820312 0.2984839677810669" quat="0.1922789067029953 -0.0 -0.0 -0.9813402891159058" type="box" size="0.018661975860595703 0.23225755989551544 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_011" pos="-5.006728172302246 -3.7553606033325195 0.2984839677810669" quat="0.4671289324760437 -0.0 -0.0 -0.884189248085022" type="box" size="0.018661973997950554 0.1792493313550949 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_012" pos="-4.616347789764404 -3.8957207202911377 0.2984839677810669" quat="0.6453282237052917 -0.0 -0.0 -0.76390540599823" type="box" size="0.018661973997950554 0.25326916575431824 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_013" pos="-5.22855806350708 -3.5565989017486572 0.2984839677810669" quat="0.3212569057941437 -0.0 -0.0 -0.946992039680481" type="box" size="0.018661977723240852 0.12827935814857483 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_014" pos="5.515832901000977 -2.6775097846984863 0.2984839677810669" quat="0.05261477455496788 0.0 0.0 0.9986149072647095" type="box" size="0.018661975860595703 0.3584986925125122 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_015" pos="5.391788005828857 -3.2440261840820312 0.2984839677810669" quat="0.19228225946426392 0.0 0.0 0.981339693069458" type="box" size="0.018661973997950554 0.23225754499435425 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_016" pos="5.006728172302246 -3.7553606033325195 0.2984839677810669" quat="0.46712756156921387 0.0 0.0 0.8841899633407593" type="box" size="0.018661973997950554 0.1792493313550949 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_017" pos="4.616347789764404 -3.8957207202911377 0.2984839677810669" quat="0.6453310251235962 0.0 0.0 0.763903021812439" type="box" size="0.018661973997950554 0.25326916575431824 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_018" pos="5.22855806350708 -3.5565989017486572 0.2984839677810669" quat="0.321257621049881 0.0 0.0 0.9469918608665466" type="box" size="0.018661977723240852 0.12827935814857483 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_019" pos="-5.51569128036499 2.580108165740967 0.2984468936920166" quat="0.9986149072647095 0.0 0.0 -0.052614618092775345" type="box" size="0.018661973997950554 0.3584986627101898 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_020" pos="-5.3916473388671875 3.1466245651245117 0.2984468936920166" quat="0.981339693069458 0.0 0.0 -0.1922820806503296" type="box" size="0.018661975860595703 0.23225755989551544 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_021" pos="-5.00658655166626 3.657958984375 0.2984468936920166" quat="0.884190022945404 0.0 0.0 -0.46712741255760193" type="box" size="0.018661973997950554 0.1792493313550949 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_022" pos="-4.616207122802734 3.798319101333618 0.2984468936920166" quat="0.7639030814170837 0.0 0.0 -0.6453310251235962" type="box" size="0.018661972135305405 0.25326913595199585 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_023" pos="-5.22841739654541 3.4591972827911377 0.2984468936920166" quat="0.9469918608665466 0.0 0.0 -0.32125750184059143" type="box" size="0.018661977723240852 0.12827935814857483 0.3017556667327881" group="3"/>
+    <geom name="COL_Cube_024" pos="5.0021514892578125 -0.9282311797142029 0.7387799024581909" quat="1.0 0.0 0.0 0.0" type="box" size="0.507981538772583 0.019494295120239258 0.7309890985488892" group="3"/>
+    <geom name="COL_Cube_025" pos="5.0021514892578125 0.928230881690979 0.7387799024581909" quat="1.0 0.0 0.0 0.0" type="box" size="0.507981538772583 0.019494295120239258 0.7309890985488892" group="3"/>
+    <geom name="COL_Cube_026" pos="4.733741760253906 -2.980232238769531e-07 1.44972562789917" quat="1.0 0.0 0.0 0.0" type="box" size="0.23957204818725586 0.9087367057800293 0.020043373107910156" group="3"/>
+    <geom name="COL_Cube_027" pos="4.733741760253906 -1.7881393432617188e-07 1.44972562789917" quat="1.0 0.0 0.0 0.0" type="box" size="0.23957204818725586 0.9087367057800293 0.020043373107910156" group="3"/>
+    <geom name="COL_Cube_028" pos="5.226289749145508 -8.377482885180143e-08 0.742372989654541" quat="0.8186747431755066 0.0 0.574257493019104 0.0" type="box" size="0.7695609331130981 0.9087364673614502 0.020043373107910156" group="3"/>
+    <geom name="COL_Cube_029" pos="-5.0021514892578125 0.9282308220863342 0.7387799024581909" quat="1.6292068494294654e-07 -0.0 -0.0 -1.0" type="box" size="0.507981538772583 0.019494295120239258 0.7309890985488892" group="3"/>
+    <geom name="COL_Cube_030" pos="-5.0021514892578125 -0.9282313585281372 0.7387799024581909" quat="1.6292068494294654e-07 -0.0 -0.0 -1.0" type="box" size="0.507981538772583 0.019494295120239258 0.7309890985488892" group="3"/>
+    <geom name="COL_Cube_031" pos="-4.7337422370910645 0.0 1.44972562789917" quat="1.6292068494294654e-07 -0.0 -0.0 -1.0" type="box" size="0.23957204818725586 0.9087367057800293 0.020043373107910156" group="3"/>
+    <geom name="COL_Cube_032" pos="-5.226289749145508 -3.7312193512661906e-07 0.742372989654541" quat="2.3097264545413054e-07 0.5742577314376831 1.620152971781863e-07 -0.818674623966217" type="box" size="0.7695608735084534 0.9087364673614502 0.020043371245265007" group="3"/>
+    <body name="LNK_Ball" pos="2.67608243120776e-07 -3.9774130300429533e-07 0.09167862683534622" quat="1.0 0.0 0.0 0.0">
+      <joint name="JNT_Joint" pos="0.0 0.0 0.0" axis="0.0 0.0 1.0" type="free"/>
+      <geom name="GEO_Robot_Football" pos="0.0 0.0 0.0" quat="1.0 0.0 0.0 0.0" type="mesh" mesh="Robot_Football" material="Material #149"/>
+    </body>
+    <body name="LNK_Link" pos="4.508542537689209 -3.0104482173919678 0.024369925260543823" quat="1.0 0.0 0.0 0.0">
+      <joint name="JNT_Joint_001" pos="0.0 0.0 0.0" axis="0.0 -1.0 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <joint name="JNT_Joint_001_000" pos="0.0 0.0 0.0" axis="1.0 4.371138828673793e-08 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <geom name="GEO_V_CornerFlag" pos="0.0 0.0 0.0" quat="0.5 0.5 -0.5 -0.5" type="mesh" mesh="Corner_Flag" material="Material #144" contype="0" conaffinity="0"/>
+      <geom name="COL_Collider_001_001" pos="-2.384185791015625e-06 -1.6689300537109375e-06 0.3930816054344177" quat="1.0 -3.774895063202166e-08 0.0 0.0" type="capsule" size="0.019999999552965164 0.36219531297683716" group="3"/>
+    </body>
+    <body name="LNK_Link_001" pos="4.508542537689209 3.0104498863220215 0.024369925260543823" quat="1.0 0.0 0.0 0.0">
+      <joint name="JNT_Joint_001_001" pos="0.0 0.0 0.0" axis="1.0 4.371138828673793e-08 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <joint name="JNT_Joint_001_006" pos="0.0 0.0 0.0" axis="0.0 -1.0 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <geom name="GEO_V_CornerFlag_001" pos="0.0 0.0 0.0" quat="0.7071067690849304 0.7071067690849304 0.0 0.0" type="mesh" mesh="Corner_Flag" material="Material #144" contype="0" conaffinity="0"/>
+      <geom name="COL_Collider_001" pos="0.0 0.0 0.3930816054344177" quat="1.0 -3.774895063202166e-08 0.0 0.0" type="capsule" size="0.019999999552965164 0.36219531297683716" group="3"/>
+    </body>
+    <body name="LNK_Link_002" pos="-4.508540153503418 -3.0104482173919678 0.024369925260543823" quat="1.0 0.0 0.0 0.0">
+      <joint name="JNT_Joint_001_002" pos="0.0 0.0 0.0" axis="0.0 -1.0 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <joint name="JNT_Joint_001_004" pos="0.0 0.0 0.0" axis="1.0 4.371138828673793e-08 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <geom name="GEO_V_CornerFlag_002" pos="0.0 0.0 0.0" quat="1.1520232590100932e-07 1.1520231879558196e-07 -0.7071067690849304 -0.7071067690849304" type="mesh" mesh="Corner_Flag" material="Material #144" contype="0" conaffinity="0"/>
+      <geom name="COL_Collider_001_002" pos="0.0 -1.6689300537109375e-06 0.3930816054344177" quat="1.0 -3.774895063202166e-08 0.0 0.0" type="capsule" size="0.019999999552965164 0.36219531297683716" group="3"/>
+    </body>
+    <body name="LNK_Link_003" pos="-4.508540153503418 3.0104498863220215 0.024369925260543823" quat="1.0 0.0 0.0 0.0">
+      <joint name="JNT_Joint_001_003" pos="0.0 0.0 0.0" axis="1.0 4.371138828673793e-08 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <joint name="JNT_Joint_001_005" pos="0.0 0.0 0.0" axis="0.0 -1.0 -4.371138828673793e-08" type="hinge" range="-0.009999999776482582 0.009999999776482582" limited="true"/>
+      <geom name="GEO_V_CornerFlag_003" pos="0.0 0.0 0.0" quat="0.5000000596046448 0.5 0.5 0.5" type="mesh" mesh="Corner_Flag" material="Material #144" contype="0" conaffinity="0"/>
+      <geom name="COL_Collider_001_003" pos="0.0 0.0 0.3930816054344177" quat="1.0 -3.774895063202166e-08 0.0 0.0" type="capsule" size="0.019999999552965164 0.36219531297683716" group="3"/>
+    </body>
+  </worldbody>
+</mujoco>

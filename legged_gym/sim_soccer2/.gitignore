@@ -1,0 +1,27 @@
+
+
+cat > .gitignore << 'EOF'
+# Python 缓存与编译文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 日志与调试文件
+logs/
+debug_logs/
+*.log
+
+# 虚拟环境与依赖
+envs/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store

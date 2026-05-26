@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sim Manager API Docs</title>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; background: #f7f8fa; color: #1f2937; }
+    .page { max-width: 980px; margin: 24px auto; padding: 0 16px; }
+    h1 { margin: 0 0 10px; }
+    .card { background: #fff; border: 1px solid #dde3ea; border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #e5e7eb; padding: 8px; text-align: left; font-size: 14px; }
+    code, pre { background: #f3f4f6; border-radius: 6px; }
+    code { padding: 2px 6px; }
+    pre { padding: 10px; overflow: auto; }
+    a { color: #2563eb; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1>Mujoco Sim Manager API Docs</h1>
+    <div class="card">
+      <p>Interactive Swagger: <a href="/docs" target="_blank">/docs</a></p>
+      <p>Manager UI: <a href="/" target="_blank">/</a></p>
+    </div>
+
+    <div class="card">
+      <h3>Endpoints</h3>
+      <table>
+        <thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead>
+        <tbody>
+          <tr><td>GET</td><td><code>/healthz</code></td><td>health check</td></tr>
+          <tr><td>POST</td><td><code>/sims/start</code></td><td>start one mujoco simulation process</td></tr>
+          <tr><td>GET</td><td><code>/sims</code></td><td>scan current simulation processes and mark managed/external</td></tr>
+          <tr><td>POST</td><td><code>/sims/stop</code></td><td>stop one scanned simulation by pid</td></tr>
+          <tr><td>POST</td><td><code>/sims/stop-all</code></td><td>stop all scanned simulations (managed + external)</td></tr>
+          <tr><td>POST</td><td><code>/sims/stop-external</code></td><td>backward-compatible alias of <code>/sims/stop-all</code></td></tr>
+          <tr><td>GET</td><td><code>/manager/docs</code></td><td>this api docs page</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Start Request Example</h3>
+<pre>{
+  "team_size": 3,
+  "robot_type": "pi_plus",
+  "zmq_port": null,
+  "webview_port": null,
+  "webview": true,
+  "allow_keyboard_control": false,
+  "zmq": true,
+  "policy_device": "gpu",
+  "use_referee": false,
+  "web_fps": 20,
+  "web_width": 1280,
+  "web_height": 720
+}</pre>
+      <p><code>zmq_port/webview_port</code> 留空或传 <code>null</code> 时，manager 会自动分配可用端口。</p>
+    </div>
+
+    <div class="card">
+      <h3>cURL Examples</h3>
+<pre>curl -X POST http://127.0.0.1:8000/sims/start \
+  -H "Content-Type: application/json" \
+  -d '{"team_size":3,"robot_type":"pi_plus","zmq_port":5555,"webview_port":5811,"webview":true,"allow_keyboard_control":false,"zmq":true,"policy_device":"gpu","use_referee":true}'</pre>
+<pre>curl http://127.0.0.1:8000/sims</pre>
+<pre>curl -X POST http://127.0.0.1:8000/sims/stop \
+  -H "Content-Type: application/json" \
+  -d '{"pid":12345}'</pre>
+<pre>curl -X POST http://127.0.0.1:8000/sims/stop-all</pre>
+    </div>
+  </div>
+</body>
+</html>
