@@ -36,6 +36,13 @@ _SEED = flags.DEFINE_integer("seed", None, "Random seed for reproducibility")
 _RAND_SEED = flags.DEFINE_bool("rand-seed", False, "Generate random seed")
 _RLLIB = flags.DEFINE_string("rllib", "skrl", "The RL framework (skrl/rslrl)")
 
+# Physics safety overrides
+_ACTION_SCALE = flags.DEFINE_float("action-scale", None, "Override env action scale")
+_MAX_SAFE_VELOCITY = flags.DEFINE_float("max-safe-velocity", None, "Override max safe joint velocity (rad/s)")
+_MAX_SAFE_BALL_SPEED = flags.DEFINE_float("max-safe-ball-speed", None, "Override max safe ball speed (m/s)")
+_BAD_STATE_RESET = flags.DEFINE_bool("bad-state-reset", True, "Enable bad-state guard before physics_step")
+_DEBUG_PHYSICS = flags.DEFINE_bool("debug-physics", False, "Enable physics debug diagnostics")
+
 
 def get_train_backend(supports: utils.DeviceSupports, train_backend_arg: str | None, rllib: str):
     """
@@ -98,6 +105,21 @@ def main(argv):
     elif _SEED.present:
         rl_override["runner.seed"] = _SEED.value
 
+    # Build env config overrides from safety flags
+    env_cfg_override = {}
+    if _ACTION_SCALE.present:
+        env_cfg_override["control.action_scale"] = _ACTION_SCALE.value
+    if _MAX_SAFE_VELOCITY.present:
+        env_cfg_override["max_safe_velocity"] = _MAX_SAFE_VELOCITY.value
+    if _MAX_SAFE_BALL_SPEED.present:
+        env_cfg_override["max_safe_ball_speed"] = _MAX_SAFE_BALL_SPEED.value
+    if _BAD_STATE_RESET.present:
+        env_cfg_override["bad_state_reset"] = _BAD_STATE_RESET.value
+    if _DEBUG_PHYSICS.present:
+        env_cfg_override["debug_physics"] = _DEBUG_PHYSICS.value
+    if not env_cfg_override:
+        env_cfg_override = None
+
     sim_backend = _SIM_BACKEND.value
     rllib = _RLLIB.value
 
@@ -111,18 +133,18 @@ def main(argv):
         assert train_backend == "torch", "RSLRL only supports PyTorch backend"
         from motrix_rl.rslrl.torch.train import ppo
 
-        trainer = ppo.Trainer(env_name, sim_backend, cfg_override=rl_override, enable_render=enable_render)
+        trainer = ppo.Trainer(env_name, sim_backend, cfg_override=rl_override, env_cfg_override=env_cfg_override, enable_render=enable_render)
 
     elif train_backend == "jax":
         from motrix_rl.skrl.jax.train import ppo
 
         config.jax.backend = "jax"  # or "numpy"
-        trainer = ppo.Trainer(env_name, sim_backend, cfg_override=rl_override, enable_render=enable_render)
+        trainer = ppo.Trainer(env_name, sim_backend, cfg_override=rl_override, env_cfg_override=env_cfg_override, enable_render=enable_render)
 
     elif train_backend == "torch":
         from motrix_rl.skrl.torch.train import ppo
 
-        trainer = ppo.Trainer(env_name, sim_backend, cfg_override=rl_override, enable_render=enable_render)
+        trainer = ppo.Trainer(env_name, sim_backend, cfg_override=rl_override, env_cfg_override=env_cfg_override, enable_render=enable_render)
     else:
         raise Exception(f"Unknown train backend: {train_backend}")
 

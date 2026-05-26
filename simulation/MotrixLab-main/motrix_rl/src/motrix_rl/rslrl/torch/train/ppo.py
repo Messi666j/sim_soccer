@@ -41,6 +41,7 @@ class Trainer:
     _sim_backend: str
     _rlcfg: RslrlCfg
     _enable_render: bool
+    _env_cfg_override: dict
 
     def __init__(
         self,
@@ -48,6 +49,7 @@ class Trainer:
         sim_backend: str = None,
         enable_render: bool = False,
         cfg_override: dict = None,
+        env_cfg_override: dict = None,
     ) -> None:
         """Initialize the RSLRL PPO trainer.
 
@@ -56,6 +58,7 @@ class Trainer:
             sim_backend: Simulation backend to use (e.g., "mujoco", "npcm")
             enable_render: Whether to enable rendering during training
             cfg_override: Optional configuration overrides
+            env_cfg_override: Optional environment config overrides
         """
         rlcfg = rl_registry.default_rl_cfg(env_name, "rslrl", backend="torch")
         if cfg_override is not None:
@@ -64,16 +67,28 @@ class Trainer:
         self._env_name = env_name
         self._sim_backend = sim_backend
         self._enable_render = enable_render
+        self._env_cfg_override = env_cfg_override
 
     def train(self) -> None:
         """Start training the agent.
 
         Creates the environment, wraps it for RSLRL, and runs the training loop.
         """
+        import os
+
         rlcfg = self._rlcfg
 
         # Create environment
-        env = env_registry.make(self._env_name, sim_backend=self._sim_backend, num_envs=rlcfg.num_envs)
+        env = env_registry.make(self._env_name, sim_backend=self._sim_backend, num_envs=rlcfg.num_envs, env_cfg_override=self._env_cfg_override)
+        # Apply nested overrides (dot-notation keys like "control.action_scale")
+        if self._env_cfg_override:
+            for key, value in self._env_cfg_override.items():
+                if "." in key:
+                    obj = env.cfg
+                    parts = key.split(".")
+                    for part in parts[:-1]:
+                        obj = getattr(obj, part)
+                    setattr(obj, parts[-1], value)
 
         # Set random seed
         if rlcfg.runner.seed is not None:
@@ -89,9 +104,15 @@ class Trainer:
         # Create RSLRL config - use to_dict() method
         rslrl_cfg = self._create_rslrl_config()
 
+        # Get log directory and save full config before training
+        log_dir = get_log_dir(self._env_name, rllib="rslrl", agent_name="PPO")
+        os.makedirs(log_dir, exist_ok=True)
+        full_cfg = utils.class_to_dict(rlcfg)
+        utils.save_run_config(log_dir, full_cfg)
+
         # Create RSLRL runner
         runner = OnPolicyRunner(
-            vec_env, rslrl_cfg, log_dir=get_log_dir(self._env_name, rllib="rslrl", agent_name="PPO"), device=device
+            vec_env, rslrl_cfg, log_dir=log_dir, device=device
         )
 
         # Start training

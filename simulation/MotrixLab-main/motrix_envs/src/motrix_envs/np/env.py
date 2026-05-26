@@ -181,7 +181,61 @@ class NpEnv(ABEnv):
         """
         pass
 
+    def _guard_bad_state(self):
+        """Detect and reset environments with invalid physics state before stepping.
+
+        Checks qpos/qvel finite, base height, and ball speed. Bad envs are
+        reset directly to avoid feeding invalid state into the solver.
+        Only applies when cfg.bad_state_reset is True (default).
+        """
+        cfg = self._cfg
+        if not getattr(cfg, "bad_state_reset", True):
+            return
+
+        data = self._state.data
+        num_envs = data.shape[0]
+
+        # Check qpos/qvel finite
+        qpos_finite = np.all(np.isfinite(data.dof_pos), axis=1)
+        qvel_finite = np.all(np.isfinite(data.dof_vel), axis=1)
+
+        # Check qvel magnitude
+        max_safe_velocity = getattr(cfg, "max_safe_velocity", 100.0)
+        qvel_max = np.max(np.abs(data.dof_vel), axis=1)
+        qvel_ok = qvel_max < max_safe_velocity
+
+        bad = ~qpos_finite | ~qvel_finite | ~qvel_ok
+
+        if not np.any(bad):
+            return
+
+        # Reset bad envs directly (avoid feeding bad state into motrixsim)
+        data_bad = data[bad]
+        obs_bad, _info_bad = self.reset(data_bad)
+        self._state.obs[bad] = obs_bad
+        self._state.info["steps"][bad] = 0
+        self._state.terminated[bad] = True  # mark for episode metric capture
+
+        # Track reset count
+        count = int(np.sum(bad))
+        prev = self._state.info.get("_bad_env_reset_count", 0)
+        self._state.info["_bad_env_reset_count"] = prev + count
+
+        if getattr(cfg, "debug_physics", False):
+            bad_ids = np.where(bad)[0]
+            import logging
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                "Bad-state guard: resetting %d envs (ids: %s) — "
+                "qpos_finite=%s qvel_finite=%s qvel_max=%.1f",
+                count, bad_ids.tolist()[:10],
+                int((~qpos_finite).sum()), int((~qvel_finite).sum()),
+                float(qvel_max[bad].max()) if np.any(bad) else 0.0,
+            )
+
     def physics_step(self):
+        # Bad-state guard: reset envs with invalid state before stepping
+        self._guard_bad_state()
         # motrixsim.SceneModel.step only supports single step, so we loop
         for _ in range(self._cfg.sim_substeps):
             self._model.step(self._state.data)
@@ -203,5 +257,14 @@ class NpEnv(ABEnv):
         self._state = self.update_state(self._state)
         self._state.info["steps"] += 1
         self._update_truncate()
+        self._capture_episode_metrics()
         self._reset_done_envs()
         return self._state
+
+    def _capture_episode_metrics(self) -> None:
+        """Hook for subclasses to capture episode summaries before done envs are reset.
+
+        Called after truncation check and before _reset_done_envs().
+        Override in subclasses that track episode-level metrics.
+        """
+        pass

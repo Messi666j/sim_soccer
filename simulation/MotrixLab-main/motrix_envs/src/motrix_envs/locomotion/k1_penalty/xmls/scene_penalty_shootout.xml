@@ -1,6 +1,6 @@
 <mujoco model="K1 penalty shootout">
   <compiler angle="radian" autolimits="true" meshdir="../../../../../../../../simulation/motrixsim/assets/robots/k1/meshes/"/>
-  <option timestep="0.005" tolerance="1e-6" impratio="10" solver="Newton"/>
+  <option timestep="0.005" tolerance="1e-6" impratio="1" solver="Newton"/>
 
   <default>
     <geom solimp="0.90 0.95 0.001" solref="0.001 1"/>
@@ -61,8 +61,9 @@
     <geom name="net_back" type="box" pos="5.05 0 0.9" size="0.02 1.0 0.9" rgba="0.8 0.8 0.8 0.5"/>
     <geom name="net_top" type="box" pos="5.0 0 1.8" size="0.5 1.0 0.02" rgba="0.8 0.8 0.8 0.3"/>
 
-    <!-- Ball -->
+    <!-- Ball (FIFA size 5, mass 0.43 kg, radius 0.11 m) -->
     <body name="ball" pos="3.0 0 0.11">
+      <inertial pos="0 0 0" mass="0.43" diaginertia="0.00208 0.00208 0.00208"/>
       <joint name="ball-root" type="free" limited="false"/>
       <geom name="ball" type="sphere" size="0.11" rgba="1 1 1 1" friction="0.2 0.05 0.01"/>
     </body>
@@ -218,7 +219,23 @@
   </worldbody>
 
   <actuator>
-    <!-- Only leg actuators for soccer (12 DOF) -->
+    <!-- Head actuators (2 DOF, zero-torque default, not RL-controlled) -->
+    <motor name="AAHead_yaw" joint="AAHead_yaw" forcerange="-6.0 6.0"/>
+    <motor name="Head_pitch" joint="Head_pitch" forcerange="-6.0 6.0"/>
+
+    <!-- Left arm actuators (4 DOF, zero-torque default, not RL-controlled) -->
+    <motor name="ALeft_Shoulder_Pitch" joint="ALeft_Shoulder_Pitch" forcerange="-14.0 14.0"/>
+    <motor name="Left_Shoulder_Roll" joint="Left_Shoulder_Roll" forcerange="-14.0 14.0"/>
+    <motor name="Left_Elbow_Pitch" joint="Left_Elbow_Pitch" forcerange="-14.0 14.0"/>
+    <motor name="Left_Elbow_Yaw" joint="Left_Elbow_Yaw" forcerange="-14.0 14.0"/>
+
+    <!-- Right arm actuators (4 DOF, zero-torque default, not RL-controlled) -->
+    <motor name="ARight_Shoulder_Pitch" joint="ARight_Shoulder_Pitch" forcerange="-14.0 14.0"/>
+    <motor name="Right_Shoulder_Roll" joint="Right_Shoulder_Roll" forcerange="-14.0 14.0"/>
+    <motor name="Right_Elbow_Pitch" joint="Right_Elbow_Pitch" forcerange="-14.0 14.0"/>
+    <motor name="Right_Elbow_Yaw" joint="Right_Elbow_Yaw" forcerange="-14.0 14.0"/>
+
+    <!-- Leg actuators (12 DOF, RL-controlled) -->
     <motor name="Left_Hip_Pitch" joint="Left_Hip_Pitch" forcerange="-30.0 30.0"/>
     <motor name="Left_Hip_Roll" joint="Left_Hip_Roll" forcerange="-35.0 35.0"/>
     <motor name="Left_Hip_Yaw" joint="Left_Hip_Yaw" forcerange="-20.0 20.0"/>

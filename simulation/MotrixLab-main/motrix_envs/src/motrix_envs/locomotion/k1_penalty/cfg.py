@@ -28,13 +28,15 @@ class K1ControlConfig:
     Left/Right: Hip_Pitch, Hip_Roll, Hip_Yaw, Knee_Pitch, Ankle_Pitch, Ankle_Roll.
     """
 
+    # PD gains match K1_MOTOR_STIFFNESS / K1_MOTOR_DAMPING from motrixsim runtime_config
+    # Lower than legged_gym (200) for numerical stability at 0.002-0.005 timesteps
     stiffness: list[float] = field(default_factory=lambda: [
-        200.0, 200.0, 200.0, 200.0, 50.0, 50.0,
-        200.0, 200.0, 200.0, 200.0, 50.0, 50.0,
+        80.0, 80.0, 80.0, 80.0, 50.0, 50.0,
+        80.0, 80.0, 80.0, 80.0, 50.0, 50.0,
     ])
     damping: list[float] = field(default_factory=lambda: [
-        5.0, 5.0, 5.0, 5.0, 1.0, 1.0,
-        5.0, 5.0, 5.0, 5.0, 1.0, 1.0,
+        2.0, 2.0, 2.0, 2.0, 1.0, 1.0,
+        2.0, 2.0, 2.0, 2.0, 1.0, 1.0,
     ])
     # action_scale: action * scale = joint target offset from default angle (radians)
     action_scale: float = 0.25
@@ -96,8 +98,8 @@ class K1PenaltyShootoutCfg(EnvCfg):
     # Scene XML path (relative to this file)
     model_file: str = os.path.dirname(__file__) + "/xmls/scene_penalty_shootout.xml"
 
-    # Simulation timestep
-    sim_dt: float = 0.005
+    # Simulation timestep (matches legged_gym K1 for stability with PD gains)
+    sim_dt: float = 0.002
     # Control (policy) timestep = sim_dt * sim_substeps
     ctrl_dt: float = 0.02  # 50 Hz policy rate
 
@@ -150,6 +152,25 @@ class K1PenaltyShootoutCfg(EnvCfg):
     obs_scale_ball_pos: float = 1.0
     obs_scale_ball_vel: float = 1.0
     obs_scale_goal_pos: float = 1.0
+
+    # ---- Task metric collection mode ----
+    # "minimal": only episode-level accumulators, no per-step info writes (training default)
+    # "full": per-step metrics + episode dict summaries (eval default)
+    metrics_mode: str = "minimal"
+
+    # ---- Safety guards (do not change reward semantics) ----
+    # Enable bad-state detection and reset before physics_step
+    bad_state_reset: bool = True
+    # Print physics debug diagnostics each step
+    debug_physics: bool = False
+    # Max safe joint velocity magnitude (rad/s); envs exceeding this get reset
+    max_safe_velocity: float = 100.0
+    # Max safe ball speed (m/s); envs exceeding this get reset
+    max_safe_ball_speed: float = 50.0
+
+    # ---- Task metric thresholds ----
+    # Ball speed threshold for "shot" detection (m/s)
+    shot_speed_threshold: float = 1.0
 
     # ---- Randomization (disabled by default for MVP) ----
     randomize_ball_position: bool = False

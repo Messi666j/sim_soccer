@@ -16,6 +16,7 @@
 from typing import Any, Tuple
 
 import gymnasium
+import numpy as np
 import torch
 from skrl.envs.torch import Wrapper as SkrlWrapper
 
@@ -30,6 +31,7 @@ class SkrlNpWrapper(SkrlWrapper):
 
     _env: NpEnv
     _renderer: NpRenderer = None
+    _action_clip_count: int = 0
 
     def __init__(self, env: NpEnv, enable_render: bool = False):
         super().__init__(env)
@@ -50,7 +52,18 @@ class SkrlNpWrapper(SkrlWrapper):
         Any,
     ]:
         actions = actions.cpu().numpy()
+
+        # ---- Action safety guard ----
+        nan_count = int(np.isnan(actions).sum())
+        inf_count = int(np.isinf(actions).sum())
+        if nan_count > 0 or inf_count > 0:
+            actions = np.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
+            SkrlNpWrapper._action_clip_count += 1
+
+        actions = np.clip(actions, -1.0, 1.0)
+
         state = self._env.step(actions)
+
         return (
             torch.tensor(state.obs, dtype=torch.float32, device=self.device),
             torch.tensor(state.reward.reshape(-1, 1), dtype=torch.float32, device=self.device),

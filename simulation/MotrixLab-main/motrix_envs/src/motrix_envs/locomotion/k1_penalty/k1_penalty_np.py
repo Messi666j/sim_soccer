@@ -128,30 +128,57 @@ class PenaltyShootoutEnv(NpEnv):
         return jname not in ("world_joint", "ball-root")
 
     def _init_buffer(self) -> None:
-        """Initialize PD gains, default angles, actuator-joint mapping, and contact detection."""
+        """Initialize PD gains, default angles, actuator-joint mapping, and contact detection.
+
+        The model has 22 actuators (2 head + 8 arm + 12 leg). We only RL-control
+        the 12 leg actuators. Head and arm actuators receive zero torque and are
+        held in place by their armature damping.
+        """
         cfg = self.cfg
 
-        # PD gains
+        # Identify leg vs non-leg actuators by name
+        LEG_KEYWORDS = ("Hip", "Knee", "Ankle")
+        leg_indices: list[int] = []
+        non_leg_indices: list[int] = []
+        for i in range(self._model.num_actuators):
+            name: str = self._model.actuator_names[i]
+            if any(kw in name for kw in LEG_KEYWORDS):
+                leg_indices.append(i)
+            else:
+                non_leg_indices.append(i)
+
+        self._num_all_actuators: int = self._model.num_actuators  # 22
+        self._leg_actuator_global_indices: np.ndarray = np.array(leg_indices, dtype=np.int32)  # [10..21]
+        self._non_leg_actuator_global_indices: np.ndarray = np.array(non_leg_indices, dtype=np.int32)  # [0..9]
+
+        # PD gains for leg actuators only (12 elements)
         self.kps = np.array(cfg.control.stiffness, dtype=np.float32)
         self.kds = np.array(cfg.control.damping, dtype=np.float32)
 
         # Gravity direction in world frame
         self.gravity_vec = np.array([0.0, 0.0, -1.0], dtype=np.float32)
 
-        # Default joint angles for all 12 actuators
+        # Default joint angles for leg actuators only (12 elements)
         self.default_angles = np.zeros(self._num_action, dtype=np.float32)
-        for i in range(self._model.num_actuators):
-            name = self._model.actuator_names[i]
+        for li, gi in enumerate(self._leg_actuator_global_indices):
+            name = self._model.actuator_names[gi]
             for k, v in cfg.init_state.default_joint_angles.items():
                 if k in name:
-                    self.default_angles[i] = v
+                    self.default_angles[li] = v
 
-        # Build mapping: actuator index → index in body subtree joint DOF array
-        # body.get_joint_dof_pos() returns ALL 22 joints in Trunk subtree,
-        # but we have only 12 actuators. We need to find which subtree indices
-        # match our actuator target joints.
-        # Strategy: create a temporary SceneData to probe the joint order,
-        # then match actuator target names against joint names in that order.
+        # Precompute joint limits for leg actuators (avoids per-step actuator→joint lookup loop)
+        self._joint_limits_low = np.zeros(self._num_action, dtype=np.float32)
+        self._joint_limits_high = np.zeros(self._num_action, dtype=np.float32)
+        for li, gi in enumerate(self._leg_actuator_global_indices):
+            target_joint: str = self._model.actuators[gi].target_name  # type: ignore[attr-defined]
+            ji = self._model.get_joint_index(target_joint)
+            if ji >= 0:
+                self._joint_limits_low[li] = self._model.joint_limits[0, ji]
+                self._joint_limits_high[li] = self._model.joint_limits[1, ji]
+
+        # Build mapping: leg actuator index (0..11) → index in body subtree joint DOF array
+        # body.get_joint_dof_pos() returns ALL 22 joints in Trunk subtree.
+        # We need to find which subtree indices match our leg actuator target joints.
         probe_data = mtx.SceneData(self._model, batch=[1])
         probe_data.set_dof_pos(self._init_dof_pos.reshape(1, -1), self._model)
         self._model.forward_kinematic(probe_data)
@@ -160,46 +187,59 @@ class PenaltyShootoutEnv(NpEnv):
 
         # Build list of joint names in body subtree order
         body_joint_names: list[str] = []
-        # Get all joints that contribute to the body's get_joint_dof_pos
-        # These are sorted by depth-first traversal of the body subtree
-        # All revolute joints have 1 DOF; free joints have 7 but are excluded
         for ji in range(self._model.num_joints):
             jname = self._model.joint_names[ji]
             jpos_start = self._model.joint_dof_pos_indices[ji]
-            # A joint has DOF entries if its pos_index doesn't equal the next joint's
-            # (or is the last joint). Simplest: exclude world_joint and ball-root.
             if jpos_start >= 0 and self._is_joint_in_body_subtree(jname):
                 body_joint_names.append(jname)
 
-        # Pad body_joint_names to match num_body_joints (in case of multi-DOF joints)
-        # Actually, each joint has size 1 (revolute) or 7 (free joint for Trunk)
-        # Free joint world_joint is NOT included in body.get_joint_dof_pos
-        # So body_joint_names should already have num_body_joints entries
         assert len(body_joint_names) == num_body_joints, \
             f"Mismatch: {len(body_joint_names)} joint names vs {num_body_joints} body DOFs"
 
+        # Map each leg actuator (0..11) to its body subtree joint DOF index
         self._actuator_joint_indices = np.zeros(self._num_action, dtype=np.int32)
-        for ai in range(self._model.num_actuators):
-            target_joint: str = self._model.actuators[ai].target_name  # type: ignore[attr-defined]
+        for li, gi in enumerate(self._leg_actuator_global_indices):
+            target_joint: str = self._model.actuators[gi].target_name  # type: ignore[attr-defined]
             found = False
             for bi, bname in enumerate(body_joint_names):
                 if bname == target_joint:
-                    self._actuator_joint_indices[ai] = bi
+                    self._actuator_joint_indices[li] = bi
                     found = True
                     break
             if not found:
                 raise RuntimeError(
-                    f"Actuator {ai} targets joint '{target_joint}' not found in body subtree. "
+                    f"Leg actuator {li} (global {gi}) targets '{target_joint}' not in body subtree. "
                     f"Body joints: {body_joint_names}"
                 )
 
-        # Update init DOF pos with default angles at the global DOF indices
-        for ai in range(self._model.num_actuators):
-            target_joint: str = self._model.actuators[ai].target_name  # type: ignore[attr-defined]
+        # Update init DOF pos: set default angles for ALL joint DOFs
+        # For leg joints: use the standing default angles
+        # For head/arm joints: use 0.0 (neutral position)
+        for gi in range(self._num_all_actuators):
+            target_joint: str = self._model.actuators[gi].target_name  # type: ignore[attr-defined]
             ji = self._model.get_joint_index(target_joint)
             if ji >= 0:
                 jpos_start = self._model.joint_dof_pos_indices[ji]
-                self._init_dof_pos[jpos_start] = self.default_angles[ai]
+                # Get default angle from config if available, else 0.0
+                angle = 0.0
+                name = self._model.actuator_names[gi]
+                for k, v in cfg.init_state.default_joint_angles.items():
+                    if k in name:
+                        angle = v
+                        break
+                # Validate: default angle must be within joint limits
+                low = self._model.joint_limits[0, ji]
+                high = self._model.joint_limits[1, ji]
+                if angle < low or angle > high:
+                    import logging
+                    _log = logging.getLogger(__name__)
+                    _log.warning(
+                        "Default angle %.3f for joint '%s' (actuator '%s') is outside "
+                        "joint limits [%.3f, %.3f]. Clamping.",
+                        angle, target_joint, name, low, high,
+                    )
+                    angle = float(np.clip(angle, low, high))
+                self._init_dof_pos[jpos_start] = angle
 
         # Goal position constant
         self.goal_pos_world = np.array(
@@ -276,36 +316,83 @@ class PenaltyShootoutEnv(NpEnv):
     # ---- Action application ----
 
     def apply_action(self, actions: np.ndarray, state: NpEnvState) -> NpEnvState:
-        """Apply PD torque control based on actions.
+        """Apply PD torque control. Only 12 leg joints are RL-controlled.
 
-        Actions are 12-dim joint position offsets in [-1, 1].
-        Mapped to: target = action * action_scale + default_angle.
-        Torque: tau = kp * (target - q) - kd * qd, clipped to torque_limits.
+        Actions shape: (num_envs, 12) — leg joint position offsets in [-1, 1].
+        Builds a full (num_envs, 22) actuator control array:
+        leg positions → PD torques; head/arm positions → zero torque.
         """
         state.info["last_actions"] = state.info.get("current_actions",
-                                                     np.zeros_like(actions))
+                                                     np.zeros((actions.shape[0], self._num_action), dtype=np.float32))
         state.info["current_actions"] = actions.copy()
-        torques = self._compute_torques(actions, state.data)
-        state.data.actuator_ctrls = torques
+        all_torques = self._compute_torques(actions, state.data)
+        state.data.actuator_ctrls = all_torques
         return state
 
     def _compute_torques(self, actions: np.ndarray, data: mtx.SceneData) -> np.ndarray:
-        """Compute PD torques from actions."""
+        """Compute PD torques for ALL 22 actuators.
+
+        Leg actuators: PD control from actions.
+        Head/arm actuators: zero torque (held in place by armature damping).
+
+        Returns:
+            Array of shape (num_envs, 22) with actuator control torques.
+        """
         cfg = self.cfg
+        num_envs = actions.shape[0]
         actions_scaled = actions * cfg.control.action_scale
-        dof_pos = self.get_dof_pos(data)
-        dof_vel = self.get_dof_vel(data)
-        torques = self.kps * (actions_scaled + self.default_angles - dof_pos) - self.kds * dof_vel
-        torques = np.clip(torques, -cfg.control.torque_limits, cfg.control.torque_limits)
-        return torques.astype(np.float32)
+        # Safety: NaN/Inf guard
+        actions_scaled = np.nan_to_num(actions_scaled, nan=0.0, posinf=0.0, neginf=0.0)
+        dof_pos = self.get_dof_pos(data)  # (num_envs, 12) — leg joints only
+        dof_vel = self.get_dof_vel(data)  # (num_envs, 12)
+
+        # PD target = default angle + action offset, clamp to joint limits (0.01 rad margin)
+        target_pos = self.default_angles + actions_scaled
+        target_pos = np.clip(target_pos, self._joint_limits_low + 0.01, self._joint_limits_high - 0.01)
+
+        # Compute leg PD torques
+        leg_torques = self.kps * (target_pos - dof_pos) - self.kds * dof_vel
+        leg_torques = np.clip(leg_torques, -cfg.control.torque_limits, cfg.control.torque_limits)
+        leg_torques = np.nan_to_num(leg_torques, nan=0.0, posinf=0.0, neginf=0.0)
+        leg_torques = leg_torques.astype(np.float32)
+
+        # Assemble full 22-element torque array
+        all_torques = np.zeros((num_envs, self._num_all_actuators), dtype=np.float32)
+        for li, gi in enumerate(self._leg_actuator_global_indices):
+            all_torques[:, gi] = leg_torques[:, li]
+
+        return all_torques
 
     # ---- State update ----
 
     def update_state(self, state: NpEnvState) -> NpEnvState:
-        """Compute observations, rewards, and termination after physics step."""
+        """Compute observations, rewards, termination, and task metrics after physics step."""
+        # Cache all MotrixSim queries once per step. Every downstream method reads from
+        # these cached values instead of making its own API calls.
+        data = state.data
+        state.info["_contact_query"] = self._model.get_contact_query(data)
+        state.info["_robot_pose"] = self._body.get_pose(data)
+        ball_pos = self.get_ball_position(data)
+        ball_vel = self.get_ball_velocity(data)
+        state.info["_ball_pos"] = ball_pos
+        state.info["_ball_vel"] = ball_vel
+        dof_pos = self.get_dof_pos(data)
+        dof_vel = self.get_dof_vel(data)
+        state.info["_dof_pos"] = dof_pos
+        state.info["_dof_vel"] = dof_vel
+        # Precompute derived quantities used by multiple methods:
+        #   norm(ball_vel)   — used in _reward_ball_speed, _update_task_metrics
+        #   norm(goal_dir)   — used in _get_obs, _reward_ball_toward_goal, _update_task_metrics (x2)
+        #   goal_dir_unit    — used in _get_obs, _reward_ball_toward_goal, _update_task_metrics
+        goal_dir = self.goal_pos_world - ball_pos
+        goal_dist = np.linalg.norm(goal_dir, axis=-1)
+        state.info["_ball_speed"] = np.linalg.norm(ball_vel, axis=-1).astype(np.float32)
+        state.info["_ball_goal_dist"] = goal_dist.astype(np.float32)
+        state.info["_goal_dir_unit"] = (goal_dir / np.maximum(goal_dist, 1e-8)[:, None]).astype(np.float32)
         state = self._update_observation(state)
         state = self._update_terminated(state)
         state = self._update_reward(state)
+        state = self._update_task_metrics(state)
         return state
 
     # ---- Observation ----
@@ -314,23 +401,23 @@ class PenaltyShootoutEnv(NpEnv):
         """Build the 57-dim observation vector."""
         cfg = self.cfg
 
-        # Proprioception
-        pose = self._body.get_pose(data)
+        # Proprioception (use cached values from update_state to avoid redundant API calls)
+        pose = info.get("_robot_pose", self._body.get_pose(data))
         base_quat = pose[:, 3:7]  # [x, y, z, w] format
         local_gravity = quaternion.rotate_inverse(base_quat, self.gravity_vec)
 
         gyro = self.get_gyro(data)
         linvel = self.get_local_linvel(data)
 
-        dof_pos = self.get_dof_pos(data)
-        dof_vel = self.get_dof_vel(data)
+        dof_pos = info.get("_dof_pos", self.get_dof_pos(data))
+        dof_vel = info.get("_dof_vel", self.get_dof_vel(data))
         joint_diff = dof_pos - self.default_angles
 
         last_actions = info.get("current_actions", np.zeros((data.shape[0], self._num_action), dtype=np.float32))
 
-        # Ball info
-        ball_pos_world = self.get_ball_position(data)
-        ball_vel_world = self.get_ball_velocity(data)
+        # Ball info (use cached values from update_state if available)
+        ball_pos_world = info.get("_ball_pos", self.get_ball_position(data))
+        ball_vel_world = info.get("_ball_vel", self.get_ball_velocity(data))
         robot_pos_world = pose[:, :3]
 
         # Ball position relative to robot in body frame
@@ -341,10 +428,13 @@ class PenaltyShootoutEnv(NpEnv):
         goal_rel_world = self.goal_pos_world - robot_pos_world
         goal_rel_body = quaternion.rotate_inverse(base_quat, goal_rel_world)
 
-        # Ball to goal vector (world frame, normalized)
-        ball_to_goal = self.goal_pos_world - ball_pos_world
-        ball_to_goal_norm = np.linalg.norm(ball_to_goal, axis=-1, keepdims=True)
-        ball_to_goal_normalized = ball_to_goal / np.maximum(ball_to_goal_norm, 1e-8)
+        # Ball to goal vector (world frame, normalized) — reuse cached value
+        if "_goal_dir_unit" in info:
+            ball_to_goal_normalized = info["_goal_dir_unit"]
+        else:
+            ball_to_goal = self.goal_pos_world - ball_pos_world
+            ball_to_goal_norm = np.linalg.norm(ball_to_goal, axis=-1, keepdims=True)
+            ball_to_goal_normalized = ball_to_goal / np.maximum(ball_to_goal_norm, 1e-8)
 
         # Concatenate observation
         obs = np.concatenate([
@@ -379,7 +469,7 @@ class PenaltyShootoutEnv(NpEnv):
         data = state.data
         num_envs = data.shape[0]
 
-        ball_pos = self.get_ball_position(data)
+        ball_pos = state.info.get("_ball_pos", self.get_ball_position(data))
         terminated = np.zeros(num_envs, dtype=bool)
 
         # Goal scored: ball crosses goal line between posts and below crossbar
@@ -392,9 +482,11 @@ class PenaltyShootoutEnv(NpEnv):
         terminated = np.logical_or(terminated, out_of_bounds)
         state.info["out_of_bounds"] = out_of_bounds
 
-        # Robot fallen: trunk contacts ground
+        # Robot fallen: trunk contacts ground (uses cached contact query from update_state)
         if self._num_termination_pairs > 0:
-            cquery = self._model.get_contact_query(data)
+            cquery = state.info.get("_contact_query")
+            if cquery is None:
+                cquery = self._model.get_contact_query(data)
             trunk_ground_contact = cquery.is_colliding(self._termination_pairs)
             robot_fallen = trunk_ground_contact.any(axis=1)
             terminated = np.logical_or(terminated, robot_fallen)
@@ -402,8 +494,8 @@ class PenaltyShootoutEnv(NpEnv):
         else:
             state.info["robot_fallen"] = np.zeros(num_envs, dtype=bool)
 
-        # Additional fall check: base height below threshold
-        pose = self._body.get_pose(data)
+        # Additional fall check: base height below threshold (uses cached pose)
+        pose = state.info.get("_robot_pose", self._body.get_pose(data))
         base_z = pose[:, 2]
         base_too_low = base_z < 0.3  # trunk height below 0.3m = fallen
         terminated = np.logical_or(terminated, base_too_low)
@@ -466,11 +558,11 @@ class PenaltyShootoutEnv(NpEnv):
 
         # Ball toward goal reward
         if "ball_toward_goal" in scales and scales["ball_toward_goal"] != 0:
-            rewards["ball_toward_goal"] = scales["ball_toward_goal"] * self._reward_ball_toward_goal(data)
+            rewards["ball_toward_goal"] = scales["ball_toward_goal"] * self._reward_ball_toward_goal(data, info)
 
         # Ball speed reward
         if "ball_speed" in scales and scales["ball_speed"] != 0:
-            rewards["ball_speed"] = scales["ball_speed"] * self._reward_ball_speed(data)
+            rewards["ball_speed"] = scales["ball_speed"] * self._reward_ball_speed(data, info)
 
         # Alive reward (small constant per step)
         if "alive" in scales and scales["alive"] != 0:
@@ -482,21 +574,25 @@ class PenaltyShootoutEnv(NpEnv):
 
         # Joint limit penalty
         if "joint_limit" in scales and scales["joint_limit"] != 0:
-            rewards["joint_limit"] = scales["joint_limit"] * self._reward_joint_limit(data)
+            rewards["joint_limit"] = scales["joint_limit"] * self._reward_joint_limit(data, info)
 
         return rewards
 
-    def _reward_ball_toward_goal(self, data: mtx.SceneData) -> np.ndarray:
+    def _reward_ball_toward_goal(self, data: mtx.SceneData, info: dict | None = None) -> np.ndarray:
         """Reward ball velocity component toward the goal.
 
         Returns dot product of ball velocity direction and goal direction,
         clipped to [0, 1] (only reward movement toward goal).
         """
-        ball_vel = self.get_ball_velocity(data)
-        ball_pos = self.get_ball_position(data)
-        goal_dir = self.goal_pos_world - ball_pos
-        goal_dir_norm = np.linalg.norm(goal_dir, axis=-1, keepdims=True)
-        goal_dir = goal_dir / np.maximum(goal_dir_norm, 1e-8)
+        if info is not None and "_ball_vel" in info and "_goal_dir_unit" in info:
+            ball_vel = info["_ball_vel"]
+            goal_dir = info["_goal_dir_unit"]
+        else:
+            ball_vel = self.get_ball_velocity(data)
+            ball_pos = info.get("_ball_pos", self.get_ball_position(data)) if info is not None else self.get_ball_position(data)
+            goal_dir = self.goal_pos_world - ball_pos
+            goal_dir_norm = np.linalg.norm(goal_dir, axis=-1, keepdims=True)
+            goal_dir = goal_dir / np.maximum(goal_dir_norm, 1e-8)
 
         vel_norm = np.linalg.norm(ball_vel, axis=-1, keepdims=True)
         vel_dir = ball_vel / np.maximum(vel_norm, 1e-8)
@@ -504,14 +600,17 @@ class PenaltyShootoutEnv(NpEnv):
         dot = np.sum(vel_dir * goal_dir, axis=-1)
         return np.clip(dot, 0.0, 1.0).astype(np.float32)
 
-    def _reward_ball_speed(self, data: mtx.SceneData) -> np.ndarray:
+    def _reward_ball_speed(self, data: mtx.SceneData, info: dict | None = None) -> np.ndarray:
         """Reward ball speed, encouraging a strong kick.
 
         Uses an exponential: exp(-0.5 * ((target - speed) / sigma)^2).
         """
         cfg = self.cfg
-        ball_vel = self.get_ball_velocity(data)
-        ball_speed = np.linalg.norm(ball_vel, axis=-1)
+        if info is not None and "_ball_speed" in info:
+            ball_speed = info["_ball_speed"]
+        else:
+            ball_vel = info.get("_ball_vel", self.get_ball_velocity(data)) if info is not None else self.get_ball_velocity(data)
+            ball_speed = np.linalg.norm(ball_vel, axis=-1)
         diff = cfg.reward.ball_speed_target - ball_speed
         return np.exp(-0.5 * (diff / cfg.reward.ball_speed_sigma) ** 2).astype(np.float32)
 
@@ -524,27 +623,233 @@ class PenaltyShootoutEnv(NpEnv):
         prev = info.get("last_actions", np.zeros_like(curr))
         return np.sum(np.square(curr - prev), axis=-1).astype(np.float32)
 
-    def _reward_joint_limit(self, data: mtx.SceneData) -> np.ndarray:
-        """Penalize joints that exceed safe range.
+    def _reward_joint_limit(self, data: mtx.SceneData, info: dict | None = None) -> np.ndarray:
+        """Penalize leg joints that exceed safe range.
 
-        Uses joint_limits from the model. For each actuated joint outside
-        its range, penalty is proportional to the violation magnitude.
+        Uses precomputed joint limit arrays from _joint_limits_low/_high (set in _init_buffer).
         """
-        dof_pos = self.get_dof_pos(data)  # (num_envs, 12)
-        # Build per-actuator joint limits from model.joint_limits
-        # joint_limits shape: (2, num_joints), indexed by joint index
-        pos_low = np.zeros(self._num_action, dtype=np.float32)
-        pos_high = np.zeros(self._num_action, dtype=np.float32)
-        for ai in range(self._num_action):
-            target_joint: str = self._model.actuators[ai].target_name  # type: ignore[attr-defined]
-            ji = self._model.get_joint_index(target_joint)
-            if ji >= 0:
-                pos_low[ai] = self._model.joint_limits[0, ji]
-                pos_high[ai] = self._model.joint_limits[1, ji]
-        violation_low = np.maximum(pos_low - dof_pos, 0.0)
-        violation_high = np.maximum(dof_pos - pos_high, 0.0)
+        if info is not None and "_dof_pos" in info:
+            dof_pos = info["_dof_pos"]
+        else:
+            dof_pos = self.get_dof_pos(data)  # (num_envs, 12)
+        violation_low = np.maximum(self._joint_limits_low - dof_pos, 0.0)
+        violation_high = np.maximum(dof_pos - self._joint_limits_high, 0.0)
         total_violation = np.sum(violation_low + violation_high, axis=-1)
         return total_violation.astype(np.float32)
+
+    # ---- Task metrics ----
+
+    def _update_task_metrics(self, state: NpEnvState) -> NpEnvState:
+        """Compute per-step task metrics and update episode-level accumulators.
+
+        These metrics are for evaluation/analysis only — they do NOT affect rewards.
+        """
+        data = state.data
+        info = state.info
+        num_envs = data.shape[0]
+        cfg = self.cfg
+
+        ball_pos = info.get("_ball_pos", self.get_ball_position(data))
+        ball_vel = info.get("_ball_vel", self.get_ball_velocity(data))
+
+        # ---- Per-step metrics (reuse cached values where available) ----
+
+        ball_speed = info.get("_ball_speed", np.linalg.norm(ball_vel, axis=-1).astype(np.float32))
+
+        # Speed toward goal: component of ball velocity in direction of goal center
+        goal_dir_unit = info.get("_goal_dir_unit")
+        if goal_dir_unit is None:
+            goal_dir = self.goal_pos_world - ball_pos
+            goal_dir_norm = np.linalg.norm(goal_dir, axis=-1, keepdims=True)
+            goal_dir_unit = goal_dir / np.maximum(goal_dir_norm, 1e-8)
+        speed_to_goal = np.sum(ball_vel * goal_dir_unit, axis=-1).astype(np.float32)
+
+        ball_goal_dist = info.get("_ball_goal_dist", np.linalg.norm(
+            self.goal_pos_world - ball_pos, axis=-1).astype(np.float32))
+
+        # Target error: lateral (y) and height (z) deviation from goal center
+        target_error_y = ball_pos[:, 1].astype(np.float32)  # goal center y = 0
+        target_error_z = ball_pos[:, 2] - cfg.goal_height / 2.0  # goal center z
+
+        # Action rate: L2 difference between current and previous action
+        curr_actions = info.get("current_actions", np.zeros((num_envs, self._num_action), dtype=np.float32))
+        last_actions = info.get("last_actions", np.zeros_like(curr_actions))
+        action_rate = np.sum(np.square(curr_actions - last_actions), axis=-1).astype(np.float32)
+
+        # Torque square: approximate energy via mean squared action (PD torques not directly accessible)
+        torque_square = np.mean(np.square(curr_actions), axis=-1).astype(np.float32)
+
+        # ---- Ball-foot contact detection (uses cached contact query from update_state) ----
+        contact_ball = np.zeros(num_envs, dtype=bool)
+        if self._num_ball_contact_pairs > 0:
+            cquery = info.get("_contact_query")
+            if cquery is None:
+                cquery = self._model.get_contact_query(data)
+            ball_foot_contact = cquery.is_colliding(self._ball_contact_pairs)
+            contact_ball = ball_foot_contact.any(axis=1)
+
+        # ---- Update per-step info (skip in minimal mode for training speed) ----
+        if cfg.metrics_mode != "minimal":
+            info["ball_speed"] = ball_speed
+            info["speed_to_goal"] = speed_to_goal
+            info["ball_goal_dist"] = ball_goal_dist
+            info["target_error_y"] = target_error_y
+            info["target_error_z"] = target_error_z
+            info["action_rate"] = action_rate
+            info["torque_square"] = torque_square
+
+        # ---- Update episode-level accumulators ----
+
+        # Episode step counter
+        info["ep_step_count"] = info.get("ep_step_count", np.zeros(num_envs, dtype=np.int32)) + 1
+
+        # Bool accumulators: once True, stays True
+        goal_scored = info.get("goal_scored", np.zeros(num_envs, dtype=bool))
+        info["ep_goal"] = np.logical_or(info.get("ep_goal", np.zeros(num_envs, dtype=bool)), goal_scored)
+
+        info["ep_contact_ball"] = np.logical_or(
+            info.get("ep_contact_ball", np.zeros(num_envs, dtype=bool)), contact_ball,
+        )
+
+        info["ep_shot"] = np.logical_or(
+            info.get("ep_shot", np.zeros(num_envs, dtype=bool)),
+            ball_speed > cfg.shot_speed_threshold,
+        )
+
+        fall = np.logical_or(
+            info.get("robot_fallen", np.zeros(num_envs, dtype=bool)),
+            info.get("base_too_low", np.zeros(num_envs, dtype=bool)),
+        )
+        info["ep_fall"] = np.logical_or(info.get("ep_fall", np.zeros(num_envs, dtype=bool)), fall)
+
+        info["ep_out_of_bounds"] = np.logical_or(
+            info.get("ep_out_of_bounds", np.zeros(num_envs, dtype=bool)),
+            info.get("out_of_bounds", np.zeros(num_envs, dtype=bool)),
+        )
+
+        # Max ball speed
+        ep_max = info.get("ep_ball_speed_max", np.zeros(num_envs, dtype=np.float32))
+        info["ep_ball_speed_max"] = np.maximum(ep_max, ball_speed)
+
+        # Time to first contact (in steps)
+        ep_ttc = info.get("ep_time_to_contact", np.full(num_envs, -1.0, dtype=np.float32))
+        first_contact_mask = (ep_ttc < 0) & contact_ball
+        ep_ttc = np.where(first_contact_mask, info["ep_step_count"].astype(np.float32), ep_ttc)
+        info["ep_time_to_contact"] = ep_ttc
+
+        # Time to first goal (in steps)
+        ep_ttg = info.get("ep_time_to_goal", np.full(num_envs, -1.0, dtype=np.float32))
+        first_goal_mask = (ep_ttg < 0) & goal_scored
+        ep_ttg = np.where(first_goal_mask, info["ep_step_count"].astype(np.float32), ep_ttg)
+        info["ep_time_to_goal"] = ep_ttg
+
+        # Cumulative sums
+        info["ep_action_rate_sum"] = info.get("ep_action_rate_sum", np.zeros(num_envs, dtype=np.float32)) + action_rate
+        info["ep_torque_square_sum"] = info.get("ep_torque_square_sum", np.zeros(num_envs, dtype=np.float32)) + torque_square
+
+        # Target error snapshot at goal time or episode end
+        # Only update for envs that just scored a goal (first time)
+        info.setdefault("ep_target_error_y", np.zeros(num_envs, dtype=np.float32))
+        info.setdefault("ep_target_error_z", np.zeros(num_envs, dtype=np.float32))
+        info["ep_target_error_y"] = np.where(first_goal_mask, target_error_y, info["ep_target_error_y"])
+        info["ep_target_error_z"] = np.where(first_goal_mask, target_error_z, info["ep_target_error_z"])
+
+        # For envs that are done without a goal, snapshot target error from final state
+        done = state.done
+        no_goal_done = done & ~info["ep_goal"]
+        info["ep_target_error_y"] = np.where(no_goal_done, target_error_y, info["ep_target_error_y"])
+        info["ep_target_error_z"] = np.where(no_goal_done, target_error_z, info["ep_target_error_z"])
+
+        return state
+
+    def _capture_episode_metrics(self) -> None:
+        """Capture episode summaries for envs that just finished, before they get reset.
+
+        In minimal mode: builds a dict of numpy arrays (one per metric, shape [num_done])
+        for efficient aggregation in the trainer.
+
+        In full mode: builds list[dict] for richer per-episode inspection.
+        """
+        state = self._state
+        done = state.done
+        if not np.any(done):
+            return
+
+        info = state.info
+        data = state.data
+        cfg = self.cfg
+        done_idx = np.where(done)[0]
+        num_done = len(done_idx)
+
+        # Batch-level data from cache (set by update_state earlier in the same step)
+        ball_pos = info.get("_ball_pos", self.get_ball_position(data))
+        ball_vel = info.get("_ball_vel", self.get_ball_velocity(data))
+        goal_dir_unit = info.get("_goal_dir_unit")
+        if goal_dir_unit is None:
+            goal_dir = self.goal_pos_world - ball_pos
+            goal_dir_norm = np.linalg.norm(goal_dir, axis=-1, keepdims=True)
+            goal_dir_unit = goal_dir / np.maximum(goal_dir_norm, 1e-8)
+
+        # Filter out envs with zero steps (never actually stepped)
+        ep_steps = info["ep_step_count"][done_idx].astype(np.int32)
+        valid_mask = ep_steps > 0
+        if not np.any(valid_mask):
+            return
+        done_idx = done_idx[valid_mask]
+        ep_steps = ep_steps[valid_mask]
+        num_done = len(done_idx)
+
+        # Compute target_error for non-goal episodes (timeout / fall / OOB)
+        has_goal = info["ep_goal"][done_idx]
+        no_goal = ~has_goal
+        ty = np.where(has_goal, info["ep_target_error_y"][done_idx], ball_pos[done_idx, 1])
+        tz = np.where(has_goal, info["ep_target_error_z"][done_idx],
+                      ball_pos[done_idx, 2] - cfg.goal_height / 2.0)
+
+        # Speed toward goal at episode end
+        speed_to_goal_end = np.sum(ball_vel[done_idx] * goal_dir_unit[done_idx], axis=-1)
+
+        if cfg.metrics_mode == "minimal":
+            # Fast path: dict of numpy arrays, no Python for-loop, no per-episode dicts
+            info["_episode_log"] = {
+                "goal": has_goal.astype(np.float32),
+                "contact_ball": info["ep_contact_ball"][done_idx].astype(np.float32),
+                "shot": info["ep_shot"][done_idx].astype(np.float32),
+                "fall": info["ep_fall"][done_idx].astype(np.float32),
+                "out_of_bounds": info["ep_out_of_bounds"][done_idx].astype(np.float32),
+                "max_ball_speed": info["ep_ball_speed_max"][done_idx].astype(np.float32),
+                "speed_to_goal_at_end": speed_to_goal_end.astype(np.float32),
+                "time_to_contact": info["ep_time_to_contact"][done_idx].astype(np.float32),
+                "time_to_goal": info["ep_time_to_goal"][done_idx].astype(np.float32),
+                "target_error_y": ty.astype(np.float32),
+                "target_error_z": tz.astype(np.float32),
+                "mean_action_rate": (info["ep_action_rate_sum"][done_idx].astype(np.float32)
+                                     / np.maximum(ep_steps.astype(np.float32), 1.0)),
+                "mean_torque_square": (info["ep_torque_square_sum"][done_idx].astype(np.float32)
+                                       / np.maximum(ep_steps.astype(np.float32), 1.0)),
+                "episode_length": ep_steps.astype(np.float32),
+            }
+        else:
+            # Full mode: list[dict] for eval scripts
+            log = []
+            for j in range(num_done):
+                log.append({
+                    "goal": bool(has_goal[j]),
+                    "contact_ball": bool(info["ep_contact_ball"][done_idx[j]]),
+                    "shot": bool(info["ep_shot"][done_idx[j]]),
+                    "fall": bool(info["ep_fall"][done_idx[j]]),
+                    "out_of_bounds": bool(info["ep_out_of_bounds"][done_idx[j]]),
+                    "max_ball_speed": float(info["ep_ball_speed_max"][done_idx[j]]),
+                    "time_to_contact": float(info["ep_time_to_contact"][done_idx[j]]),
+                    "time_to_goal": float(info["ep_time_to_goal"][done_idx[j]]),
+                    "target_error_y": float(ty[j]),
+                    "target_error_z": float(tz[j]),
+                    "speed_to_goal_at_end": float(speed_to_goal_end[j]),
+                    "mean_action_rate": float(info["ep_action_rate_sum"][done_idx[j]]) / max(int(ep_steps[j]), 1),
+                    "mean_torque_square": float(info["ep_torque_square_sum"][done_idx[j]]) / max(int(ep_steps[j]), 1),
+                    "episode_length": int(ep_steps[j]),
+                })
+            info["_episode_log"] = log
 
     # ---- Reset ----
 
@@ -587,14 +892,14 @@ class PenaltyShootoutEnv(NpEnv):
             (num_reset, self._num_action),
         ).astype(np.float32)
 
-        # Joint noise applied at global DOF indices for actuator joints
+        # Joint noise: apply only to leg actuators, zero noise to head/arms
         dof_pos = np.tile(self._init_dof_pos, (num_reset, 1)).copy()
-        for ai in range(self._num_action):
-            target_joint: str = self._model.actuators[ai].target_name  # type: ignore[attr-defined]
+        for li, gi in enumerate(self._leg_actuator_global_indices):
+            target_joint: str = self._model.actuators[gi].target_name  # type: ignore[attr-defined]
             ji = self._model.get_joint_index(target_joint)
             if ji >= 0:
                 jpos_start = self._model.joint_dof_pos_indices[ji]
-                dof_pos[:, jpos_start] += joint_noise[:, ai]
+                dof_pos[:, jpos_start] += joint_noise[:, li]
 
         data.set_dof_pos(dof_pos, self._model)
 
@@ -618,6 +923,27 @@ class PenaltyShootoutEnv(NpEnv):
 
         self._model.forward_kinematic(data)
 
+        # Ball-foot proximity check: warn if ball is too close to any foot at reset
+        ball_pos_after = self._ball_body.get_position(data)  # (num_reset, 3)
+        foot_positions: list[tuple[str, np.ndarray]] = []
+        for fname in cfg.foot_geom_names:
+            for gname in self._model.geom_names:
+                if gname is not None and fname in gname:
+                    gidx = self._model.get_geom_index(gname)
+                    if gidx is not None:
+                        fpos = data.geom_xpos[:, gidx, :]  # (num_reset, 3)
+                        foot_positions.append((gname, fpos))
+        for fname, fpos in foot_positions:
+            dist = np.linalg.norm(ball_pos_after - fpos, axis=-1)
+            too_close = np.any(dist < cfg.ball_radius + 0.02)
+            if too_close:
+                import logging
+                _log = logging.getLogger(__name__)
+                _log.warning(
+                    "Ball too close to foot geom '%s' at reset: min_dist=%.4fm (threshold=%.4fm)",
+                    fname, float(dist.min()), cfg.ball_radius + 0.02,
+                )
+
         info = {
             "current_actions": np.zeros((num_reset, self._num_action), dtype=np.float32),
             "last_actions": np.zeros((num_reset, self._num_action), dtype=np.float32),
@@ -625,6 +951,28 @@ class PenaltyShootoutEnv(NpEnv):
             "out_of_bounds": np.zeros(num_reset, dtype=bool),
             "robot_fallen": np.zeros(num_reset, dtype=bool),
             "base_too_low": np.zeros(num_reset, dtype=bool),
+            # Episode-level task metric accumulators
+            "ep_goal": np.zeros(num_reset, dtype=bool),
+            "ep_contact_ball": np.zeros(num_reset, dtype=bool),
+            "ep_shot": np.zeros(num_reset, dtype=bool),
+            "ep_fall": np.zeros(num_reset, dtype=bool),
+            "ep_out_of_bounds": np.zeros(num_reset, dtype=bool),
+            "ep_ball_speed_max": np.zeros(num_reset, dtype=np.float32),
+            "ep_time_to_contact": np.full(num_reset, -1.0, dtype=np.float32),
+            "ep_time_to_goal": np.full(num_reset, -1.0, dtype=np.float32),
+            "ep_action_rate_sum": np.zeros(num_reset, dtype=np.float32),
+            "ep_torque_square_sum": np.zeros(num_reset, dtype=np.float32),
+            "ep_step_count": np.zeros(num_reset, dtype=np.int32),
+            "ep_target_error_y": np.zeros(num_reset, dtype=np.float32),
+            "ep_target_error_z": np.zeros(num_reset, dtype=np.float32),
+            # Per-step task metrics
+            "ball_speed": np.zeros(num_reset, dtype=np.float32),
+            "speed_to_goal": np.zeros(num_reset, dtype=np.float32),
+            "ball_goal_dist": np.zeros(num_reset, dtype=np.float32),
+            "action_rate": np.zeros(num_reset, dtype=np.float32),
+            "torque_square": np.zeros(num_reset, dtype=np.float32),
+            "target_error_y": np.zeros(num_reset, dtype=np.float32),
+            "target_error_z": np.zeros(num_reset, dtype=np.float32),
         }
 
         obs = self._get_obs(data, info)

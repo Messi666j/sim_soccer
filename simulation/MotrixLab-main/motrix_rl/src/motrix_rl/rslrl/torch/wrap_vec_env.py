@@ -111,6 +111,9 @@ class RslrlNpEnvWrap(VecEnv):
         extras = {}
         if "time_outs" in state.info:
             extras["time_outs"] = torch.from_numpy(state.info["time_outs"]).to(self._device)
+        # Pass through episode task metrics for evaluation
+        if "_episode_log" in state.info:
+            extras["_episode_log"] = state.info["_episode_log"]
 
         return obs, rewards, dones, extras
 

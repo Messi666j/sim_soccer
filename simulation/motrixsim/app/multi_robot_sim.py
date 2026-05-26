@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 import math
+import queue
 import re
 import socket
 import sys
 import tempfile
+import threading
 import time
 import types
 from copy import deepcopy
@@ -199,6 +201,9 @@ class _BlackFrameRenderer:
 
     def render(self) -> np.ndarray:
         return np.zeros(self._shape, dtype=np.uint8)
+
+    def set_capture_camera(self, camera_name: str | None) -> None:
+        pass
 
     def close(self) -> None:
         pass
@@ -3339,6 +3344,69 @@ class MultiRobotMotrixSim:
         elif cmd == "stoptimer":
             self.referee.set_auto_state_enabled(False)
 
+    @staticmethod
+    def _render_thread(model, render_queue, stop_event, webview, web_fps, width, height):
+        """Standalone render thread: owns its GPU context, never blocks physics/ZMQ."""
+        try:
+            r = _MotrixHeadlessRenderer(model, width, height)
+        except Exception as e:
+            print(f"[MotrixWebView] render thread init failed, using black frames: {e}")
+            r = _BlackFrameRenderer(height, width)
+        camera = _FreeCameraView()
+        frame_interval = 1.0 / max(1, web_fps)
+        next_frame = time.time()
+        try:
+            while not stop_event.is_set():
+                try:
+                    item = render_queue.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                if item is None or item.get("data") is None:
+                    continue
+                data = item["data"]
+                cam_state = item.get("camera_state")
+                if cam_state is not None:
+                    camera.lookat[:] = np.array(cam_state["lookat"], dtype=np.float64)
+                    camera.distance = cam_state["distance"]
+                    camera.azimuth = cam_state["azimuth"]
+                    camera.elevation = cam_state["elevation"]
+                capture_name = item.get("capture_camera")
+                now = time.time()
+                if now >= next_frame:
+                    r.set_capture_camera(capture_name)
+                    r.update_scene(data, camera=camera)
+                    frame = r.render()
+                    webview.emit_frame(frame)
+                    next_frame = now + frame_interval
+        finally:
+            r.close()
+
+    def _push_render_data(self, render_queue: queue.Queue) -> None:
+        """Push latest scene + camera state to render thread (non-blocking)."""
+        if self._web_camera is None:
+            return
+        item = {
+            "data": self.data,
+            "capture_camera": getattr(self, "_web_capture_camera_name", None),
+            "camera_state": {
+                "lookat": tuple(float(x) for x in self._web_camera.lookat),
+                "distance": float(self._web_camera.distance),
+                "azimuth": float(self._web_camera.azimuth),
+                "elevation": float(self._web_camera.elevation),
+            },
+        }
+        try:
+            render_queue.put_nowait(item)
+        except queue.Full:
+            try:
+                render_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                render_queue.put_nowait(item)
+            except queue.Full:
+                pass
+
     def zmq_loop(self, port: int, webview: MujocoLabWebView | None, web_fps: int, width: int, height: int):
         context = zmq.Context()
         socket = context.socket(zmq.REP)
@@ -3348,15 +3416,23 @@ class MultiRobotMotrixSim:
         if webview is not None and not self.args.real_time:
             print("[MotrixWebView] forcing real-time stepping for web responsiveness")
 
-        renderer = None
-        frame_interval = 1.0 / max(1, web_fps)
-        next_frame_time = time.time()
+        # Render thread: GPU rendering in a separate thread so physics/ZMQ never wait on GPU.
+        render_queue: queue.Queue | None = None
+        render_stop: threading.Event | None = None
+        render_thread: threading.Thread | None = None
         state_emit_interval = 1.0 / max(1, web_fps)
         next_state_emit_time = time.time()
         if webview is not None:
-            renderer = self._safe_create_renderer(width=width, height=height)
+            render_queue = queue.Queue(maxsize=1)
+            render_stop = threading.Event()
             self._web_camera = _FreeCameraView()
             self._apply_camera_preset("Diagonal")
+            render_thread = threading.Thread(
+                target=self._render_thread,
+                args=(self.model, render_queue, render_stop, webview, web_fps, width, height),
+                daemon=True,
+            )
+            render_thread.start()
 
         counter = 0
         try:
@@ -3367,7 +3443,8 @@ class MultiRobotMotrixSim:
                     cmds = webview.poll_commands()
                     counter, reset_triggered = self._apply_web_commands(cmds, counter)
 
-                flags = zmq.NOBLOCK if webview is not None else 0
+                # Always use NOBLOCK: ZMQ is a side channel; physics must not wait on clients.
+                flags = zmq.NOBLOCK
                 got_msg = False
                 msg = None
                 try:
@@ -3411,17 +3488,17 @@ class MultiRobotMotrixSim:
                         "ack_timestamp": client_ts,
                     }
                     socket.send_json(response)
-                elif webview is not None and not reset_triggered:
-                    counter = self._step_once(counter)
+                else:
+                    # Physics always steps — never gated on ZMQ or rendering.
+                    if not reset_triggered:
+                        counter = self._step_once(counter)
+
+                # Push latest scene to render thread (non-blocking).
+                if render_queue is not None:
+                    self._push_render_data(render_queue)
 
                 if webview is not None:
                     now = time.time()
-                    if renderer is not None and now >= next_frame_time:
-                        renderer.set_capture_camera(getattr(self, "_web_capture_camera_name", None))
-                        renderer.update_scene(self.data, camera=self._web_camera)
-                        frame = renderer.render()
-                        webview.emit_frame(frame)
-                        next_frame_time = now + frame_interval
                     if now >= next_state_emit_time:
                         webview.emit_robot_states(self.state_for_web())
                         next_state_emit_time = now + state_emit_interval
@@ -3433,16 +3510,15 @@ class MultiRobotMotrixSim:
                 else:
                     time.sleep(0)
                 if webview is not None:
-                    # Yield a little time for Flask/SocketIO only when we are still inside the physics
-                    # budget. When compute-bound, an unconditional sleep would slow wall-clock sim further.
                     slack = float(self.model.options.timestep) - (time.time() - step_start)
                     if slack > 0.002:
                         time.sleep(0.001)
         finally:
             socket.close()
             context.term()
-            if renderer is not None:
-                renderer.close()
+            if render_thread is not None:
+                render_stop.set()
+                render_thread.join(timeout=2.0)
 
 
 def run_sim(args: RuntimeArgs, template_dir: Path):

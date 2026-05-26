@@ -208,3 +208,85 @@ def cfg_override(cfg: T, overrides: dict[str, Any]) -> T:
         result = apply_overrides_at_path(result, path, field_overrides, parent_path=path)
 
     return result
+
+
+def save_run_config(log_dir: str, cfg_dict: dict, extra_meta: dict | None = None) -> None:
+    """Save full configuration and metadata to the run directory.
+
+    Creates config.yaml (full config) and args.json (metadata + config summary).
+    Called at the start of training before the training loop begins.
+
+    Args:
+        log_dir: Path to the run log directory.
+        cfg_dict: Full configuration dictionary from cfg.to_dict() or class_to_dict().
+        extra_meta: Optional extra metadata dict (e.g., git commit, CLI args, timestamp).
+    """
+    import json
+    import os
+    import subprocess
+    import sys
+    import time
+    from datetime import datetime
+
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Save full config as YAML
+    yaml_path = os.path.join(log_dir, "config.yaml")
+    try:
+        import yaml
+
+        def _default_repr(dumper, data):
+            return dumper.represent_str(str(data))
+
+        yaml.add_multi_representer(object, _default_repr)
+        with open(yaml_path, "w") as f:
+            yaml.dump(cfg_dict, f, default_flow_style=False, allow_unicode=True)
+    except ImportError:
+        # Fallback: save as JSON if yaml is not available
+        json_path = os.path.join(log_dir, "config.yaml")
+        with open(json_path, "w") as f:
+            json.dump(cfg_dict, f, indent=2, default=str)
+
+    # Build metadata
+    meta: dict = {
+        "launch_time": datetime.now().isoformat(),
+        "command_line": " ".join(sys.argv),
+    }
+
+    # Git commit hash
+    try:
+        git_hash = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], stderr=subprocess.DEVNULL, text=True,
+        ).strip()
+        meta["git_commit"] = git_hash
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        meta["git_commit"] = "unknown"
+
+    if extra_meta:
+        meta.update(extra_meta)
+
+    # Also include key config values at top level for quick reference
+    if "num_envs" in cfg_dict:
+        meta["num_envs"] = cfg_dict["num_envs"]
+    if "runner" in cfg_dict:
+        runner = cfg_dict["runner"]
+        if isinstance(runner, dict):
+            if "seed" in runner:
+                meta["seed"] = runner["seed"]
+            if "agent" in runner:
+                agent = runner["agent"]
+                if isinstance(agent, dict):
+                    meta["ppo"] = {
+                        k: agent[k] for k in [
+                            "learning_rate", "rollouts", "learning_epochs",
+                            "mini_batches", "discount_factor", "ratio_clip",
+                        ] if k in agent
+                    }
+            if "trainer" in runner:
+                trainer = runner["trainer"]
+                if isinstance(trainer, dict) and "timesteps" in trainer:
+                    meta["total_timesteps"] = trainer["timesteps"]
+
+    args_path = os.path.join(log_dir, "args.json")
+    with open(args_path, "w") as f:
+        json.dump(meta, f, indent=2, default=str)

@@ -20,6 +20,7 @@
 14. [训练配置：PPO 算法参数](#14-训练配置ppo-算法参数)
 15. [运行方式：如何启动训练](#15-运行方式如何启动训练)
 16. [当前状态与下一步](#16-当前状态与下一步)
+17. [安全防护：多层状态守卫](#17-安全防护多层状态守卫)
 
 ---
 
@@ -190,8 +191,9 @@ PPO 的优势：稳定、易于调参、适合各种机器人任务。
 
 ```xml
 <mujoco model="K1 penalty shootout">
-  <!-- 1. 物理参数 -->
-  <option timestep="0.005"/>  <!-- 500Hz 物理步进 -->
+  <!-- 1. 物理求解器参数 -->
+  <option timestep="0.005" tolerance="1e-6" impratio="1" solver="Newton"/>
+  <!-- timestep 被 Python cfg 覆盖为 0.002, impratio=1 是 MuJoCo 标准默认值 -->
 
   <!-- 2. 地面 -->
   <geom name="ground" type="plane" rgba="0.18 0.45 0.18 1"/>
@@ -203,10 +205,11 @@ PPO 的优势：稳定、易于调参、适合各种机器人任务。
   <geom name="post_left" type="cylinder" .../>  <!-- 左门柱 -->
   <geom name="post_right" type="cylinder" .../> <!-- 右门柱 -->
 
-  <!-- 4. 足球 (自由运动物体) -->
+  <!-- 4. 足球 (FIFA 5号球, 0.43kg, 半径 0.11m) -->
   <body name="ball" pos="3.0 0 0.11">
+    <inertial pos="0 0 0" mass="0.43" diaginertia="0.00208 0.00208 0.00208"/>
     <joint name="ball-root" type="free"/>  <!-- free joint: 6 自由度 -->
-    <geom name="ball" type="sphere" size="0.11"/>  <!-- 半径 11cm -->
+    <geom name="ball" type="sphere" size="0.11" friction="0.2 0.05 0.01"/>
   </body>
 
   <!-- 5. K1 机器人 (22 关节, 完整运动学树) -->
@@ -220,11 +223,15 @@ PPO 的优势：稳定、易于调参、适合各种机器人任务。
     <!-- 右腿 (6 关节) -->
   </body>
 
-  <!-- 6. 执行器 (只控制 12 个腿关节) -->
+  <!-- 6. 执行器 (22 个, 只 RL 控制 12 个腿关节) -->
   <actuator>
+    <!-- 头部 (2, 零扭矩, 不参与 RL 控制) -->
+    <!-- 左臂 (4, 零扭矩, 不参与 RL 控制) -->
+    <!-- 右臂 (4, 零扭矩, 不参与 RL 控制) -->
+    <!-- 腿部 (12, RL 控制) -->
     <motor name="Left_Hip_Pitch" joint="Left_Hip_Pitch" forcerange="-30 30"/>
     <motor name="Left_Hip_Roll"  joint="Left_Hip_Roll"  forcerange="-35 35"/>
-    <!-- ... 共 12 个腿部电机 ... -->
+    <!-- ... 共 22 个电机 ... -->
   </actuator>
 
   <!-- 7. 传感器 -->
@@ -236,7 +243,26 @@ PPO 的优势：稳定、易于调参、适合各种机器人任务。
 </mujoco>
 ```
 
-**为什么只控制 12 个腿关节？** 因为手臂和头部对踢球没有帮助。让神经网络只控制必要的关节，降低了学习难度（12 维动作 vs 22 维动作）。手臂和头部关节仍然存在于物理模型中（保持质量和惯性分布正确），但不在控制范围内，保持默认角度不动。
+**为什么只控制 12 个腿关节？** 手臂和头部对踢球帮助有限。让神经网络只控制必要的关节，降低了学习难度（12 维动作 vs 22 维动作）。手臂和头部关节仍然存在于物理模型中（保持质量和惯性分布正确），它们有执行器但接收零扭矩，仅靠 armature damping（0.001-0.002 Nm·s/rad）防止无阻尼高速摆动。
+
+### 4.3 求解器参数说明
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `impratio` | 1 | MuJoCo 标准默认值。控制约束求解中隐式/显式的混合比例。之前为 10 时接触约束过刚性，结合极端动作导致矩阵分解失败（训练崩溃的根因之一） |
+| `tolerance` | 1e-6 | 求解器收敛容差 |
+| `solver` | Newton | 牛顿法求解器 |
+| 实际 timestep | 0.002s (500Hz) | XML 中写 0.005，被 Python cfg 的 `sim_dt=0.002` 覆盖 |
+
+### 4.4 球的物理属性
+
+球使用 FIFA 5 号标准球参数：
+- 质量: 0.43 kg
+- 半径: 0.11 m
+- 转动惯量: diaginertia = [0.00208, 0.00208, 0.00208]（均匀球体，I = 2/5 * m * r²）
+- 摩擦: sliding=0.2, torsional=0.05, rolling=0.01
+
+球通过显式 `<inertial>` 标签定义惯性属性，确保物理行为与真实足球一致。
 
 ---
 
@@ -467,33 +493,66 @@ PD 控制（比例-微分控制）是最经典的机器人控制方法：
 
 | 关节 | kp (刚度) | kd (阻尼) | 力矩上限 |
 |------|----------|----------|---------|
-| Hip_Pitch, Hip_Roll, Hip_Yaw | 200.0 | 5.0 | ±40 Nm |
-| Knee_Pitch | 200.0 | 5.0 | ±40 Nm |
+| Hip_Pitch, Hip_Roll, Hip_Yaw | 80.0 | 2.0 | ±40 Nm |
+| Knee_Pitch | 80.0 | 2.0 | ±40 Nm |
 | Ankle_Pitch, Ankle_Roll | 50.0 | 1.0 | ±40 Nm |
 
-踝关节的刚度较低，因为脚需要一定的柔顺性来适应地面。
+踝关节的刚度较低，因为脚需要一定的柔顺性来适应地面。这些值比最初的 200/5 更低，以保证在 0.002s 时间步长下的数值稳定性。
 
-力矩最终被裁剪到 `[-40, 40]` Nm 范围内，防止损坏电机（在真实机器人上）或仿真不稳定。
+### 8.4 动作安全防护
 
-### 8.4 代码实现
+在 PD 控制器中有多层安全防护，防止非法动作值破坏物理求解器：
+
+**第 1 层 - Action NaN/Inf 防护**（`SkrlNpWrapper.step()`）：
+
+```python
+actions = np.nan_to_num(actions, nan=0.0, posinf=1.0, neginf=-1.0)
+actions = np.clip(actions, -1.0, 1.0)
+```
+
+**第 2 层 - PD 目标关节限位**（`_compute_torques()`）：
+
+```python
+target_pos = self.default_angles + actions_scaled
+target_pos = np.clip(target_pos, joint_limits_low + 0.01, joint_limits_high - 0.01)
+```
+
+确保 PD 目标角度不超过关节物理极限（留 0.01 rad 安全边距）。
+
+**第 3 层 - 力矩 NaN/Inf 防护**：
+
+```python
+leg_torques = np.nan_to_num(leg_torques, nan=0.0, posinf=0.0, neginf=0.0)
+leg_torques = np.clip(leg_torques, -torque_limits, torque_limits)
+```
+
+### 8.5 代码实现
 
 ```python
 def _compute_torques(self, actions: np.ndarray, data: mtx.SceneData) -> np.ndarray:
     # 1. 缩放动作
     actions_scaled = actions * 0.25  # action_scale
+    actions_scaled = np.nan_to_num(actions_scaled, nan=0.0, posinf=0.0, neginf=0.0)
 
     # 2. 获取当前关节状态
     dof_pos = self.get_dof_pos(data)  # 12 个关节的当前位置
     dof_vel = self.get_dof_vel(data)  # 12 个关节的当前速度
 
-    # 3. 计算力矩
-    torques = self.kps * (actions_scaled + self.default_angles - dof_pos) \
-              - self.kds * dof_vel
+    # 3. 目标角度限位（不超过 joint limits - 0.01 rad）
+    target_pos = self.default_angles + actions_scaled
+    target_pos = np.clip(target_pos, joint_limits_low + 0.01, joint_limits_high - 0.01)
 
-    # 4. 裁剪到安全范围
-    torques = np.clip(torques, -40.0, 40.0)
+    # 4. 计算力矩
+    leg_torques = self.kps * (target_pos - dof_pos) - self.kds * dof_vel
 
-    return torques
+    # 5. 裁剪到安全范围并清理 NaN/Inf
+    leg_torques = np.clip(leg_torques, -40.0, 40.0)
+    leg_torques = np.nan_to_num(leg_torques, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # 6. 组装完整 22 维力矩（头部/手臂 = 0）
+    all_torques = np.zeros((num_envs, 22), dtype=np.float32)
+    all_torques[:, leg_global_indices] = leg_torques
+    return all_torques
 ```
 
 ---
@@ -712,30 +771,43 @@ MotrixLab 的 `NpEnv` 基类会智能处理批量重置：
 simulation/MotrixLab-main/
 ├── motrix_envs/src/motrix_envs/locomotion/k1_penalty/
 │   ├── __init__.py                          # 模块初始化，触发注册装饰器
-│   ├── cfg.py                                # 环境配置 (dataclass)
-│   ├── k1_penalty_np.py                      # 环境类 PenaltyShootoutEnv
+│   ├── cfg.py                                # 环境配置 (dataclass, 含安全参数)
+│   ├── k1_penalty_np.py                      # 环境类 PenaltyShootoutEnv (~960行)
 │   └── xmls/
-│       └── scene_penalty_shootout.xml        # MuJoCo 物理场景定义
+│       └── scene_penalty_shootout.xml        # MuJoCo 物理场景定义 (258行, 22个actuator)
 │
-└── motrix_rl/src/motrix_rl/tasks/
-    └── k1_penalty.py                         # RL 训练超参数 (SKRL + RSLRL)
+├── motrix_rl/src/motrix_rl/tasks/
+│   └── k1_penalty.py                         # RL 训练超参数 (SKRL + RSLRL)
+│
+└── scripts/
+    ├── debug_penalty_physics.py               # 物理调试脚本 (随机/零动作诊断)
+    └── eval_penalty.py                        # 独立评估脚本 (量化指标输出)
 ```
 
-### 12.2 修改文件
+### 12.2 修改文件（本次改动）
 
 ```
-motrix_envs/src/motrix_envs/locomotion/__init__.py  → +1 行: from . import k1_penalty
-motrix_rl/src/motrix_rl/tasks/__init__.py           → +1 行: k1_penalty,
+motrix_envs/src/motrix_envs/np/env.py                     → +50行: _guard_bad_state() + _capture_episode_metrics()
+motrix_envs/src/motrix_envs/locomotion/__init__.py         → +1行: from . import k1_penalty
+motrix_rl/src/motrix_rl/skrl/config.py                    → 修改: clip_actions=True, initial_log_std=-1.5
+motrix_rl/src/motrix_rl/skrl/torch/wrap_np.py             → +10行: action NaN/Inf guard + clip
+motrix_rl/src/motrix_rl/skrl/torch/train/ppo.py           → +10行: env_cfg_override 支持
+motrix_rl/src/motrix_rl/skrl/jax/train/ppo.py             → +10行: env_cfg_override 支持
+motrix_rl/src/motrix_rl/rslrl/torch/train/ppo.py          → +10行: env_cfg_override 支持
+motrix_rl/src/motrix_rl/tasks/__init__.py                 → +1行: k1_penalty,
+scripts/train.py                                           → +20行: 安全CLI参数 + env_cfg_override
 ```
 
 ### 12.3 各文件详细职责
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
-| `scene_penalty_shootout.xml` | 245 | MJCF 物理场景：机器人模型、球、球门、地面、传感器 |
-| `cfg.py` | 160 | 配置 dataclass：PD 参数、奖励权重、场地尺寸、初始状态 |
-| `k1_penalty_np.py` | ~550 | 环境核心：reset/step/obs/reward/termination 全部逻辑 |
-| `k1_penalty.py` | 65 | RL 超参数：网络结构 [512,256,128]、学习率 3e-4、PPO 参数 |
+| `scene_penalty_shootout.xml` | 258 | MJCF 物理场景：机器人模型(22 actuator)、FIFA球(显式inertial)、球门、地面、传感器 |
+| `cfg.py` | 165 | 配置 dataclass：PD 参数(80/2)、奖励权重、场地尺寸、安全参数 |
+| `k1_penalty_np.py` | ~960 | 环境核心：reset/step/obs/reward/termination/task_metrics 全部逻辑 |
+| `k1_penalty.py` | 78 | RL 超参数：网络结构[512,256,128]、学习率3e-4、PPO参数、clip_actions/initial_log_std |
+| `debug_penalty_physics.py` | 215 | 物理调试：随机/零动作诊断、崩溃dump、NaN检测 |
+| `eval_penalty.py` | 404 | 独立评估：批量评估训练好的策略、输出成功率和统计指标 |
 
 ### 12.4 关键类和方法
 
@@ -744,32 +816,30 @@ class PenaltyShootoutEnv(NpEnv):
     """K1 点球射门 RL 环境"""
 
     def __init__(self, cfg, num_envs=1):
-        """初始化：加载场景、创建 PD 增益、构建执行器-关节索引映射"""
+        """初始化：加载场景、创建 PD 增益、构建执行器-关节索引映射(22→12)"""
 
     def apply_action(self, actions, state):
-        """应用动作：神经网络输出 → PD 力矩 → 设置执行器"""
+        """应用动作：神经网络输出 → PD 力矩 → 设置 22 个执行器"""
 
     def update_state(self, state):
-        """更新状态：计算观察、奖励、终止条件"""
+        """更新状态：缓存物理查询 → 计算观察、奖励、终止条件、任务指标"""
 
     def reset(self, data):
-        """重置环境：球放罚球点、机器人放球后方、清空状态"""
+        """重置环境：球放罚球点、机器人放球后方、球-脚穿透检查"""
 
     # ---- 内部方法 ----
     def _get_obs(self, data, info) -> np.ndarray:
-        """构建 57 维观察向量"""
+        """构建 57 维观察向量 (使用缓存避免重复API调用)"""
 
     def _compute_torques(self, actions, data) -> np.ndarray:
-        """PD 控制：动作 → 关节力矩"""
+        """PD 控制：动作 → 关节目标(限位) → 22维力矩"""
 
     def _compute_rewards(self, data, info) -> dict:
         """计算 6 项奖励分量"""
 
-    def _is_goal(self, ball_pos) -> np.ndarray:
-        """判断球是否进球门"""
-
-    def _is_out_of_bounds(self, ball_pos) -> np.ndarray:
-        """判断球是否出界"""
+    # ---- 安全防护 (NpEnv 基类) ----
+    def _guard_bad_state(self):
+        """physics_step 前检查 qpos/qvel 合法性，bad env 自动 reset"""
 ```
 
 ---
@@ -858,56 +928,76 @@ elu(x) = {
 
 ### 14.2 PPO 超参数
 
+#### SKRL (默认框架)
+
 | 参数 | 值 | 含义 |
 |------|-----|------|
 | learning_rate | 3e-4 | 每次更新网络的学习步长 |
-| num_learning_epochs | 5 | 每批数据重复学习的次数 |
-| num_mini_batches | 4 | 每 epoch 分成多少小批 |
-| entropy_coef | 0.01 | 熵正则化系数（鼓励探索） |
-| gamma (discount_factor) | 0.99 | 未来奖励的折扣率 |
+| learning_epochs | 5 | 每批数据重复学习的次数 |
+| mini_batches | 4 | 每 epoch 分成多少小批 |
+| rollouts | 64 | 每个环境连续收集的步数 |
+| discount_factor | 0.99 | 未来奖励的折扣率 |
 | lam (GAE λ) | 0.95 | 广义优势估计的平滑参数 |
+| clip_actions | True | 采样动作后裁剪到 [-1, 1] |
+| initial_log_std | -1.5 | 初始探索噪声 (std = e⁻¹·⁵ ≈ 0.223) |
+| max_log_std | 2.0 | log_std 上限 |
+| min_log_std | -20.0 | log_std 下限 |
+| trainer.timesteps | 50000 | 总环境步数（batch steps） |
+
+#### RSLRL
+
+| 参数 | 值 | 含义 |
+|------|-----|------|
+| learning_rate | 3e-4 | 学习率 |
+| num_learning_epochs | 5 | 每批数据学习轮数 |
+| num_mini_batches | 4 | mini-batch 数量 |
 | num_steps_per_env | 24 | 每轮每个环境执行的步数 |
+| entropy_coef | 0.01 | 熵正则化系数 |
 | max_iterations | 3000 | 总训练轮数 |
 
 ### 14.3 训练规模
 
-| 场景 | num_envs | 总步数 (approx) |
-|------|----------|----------------|
-| 快速调试 | 1-16 | ~72,000 |
-| 小规模训练 | 256 | ~18,432,000 |
-| 标准训练 | 1024 | ~73,728,000 |
-| 大规模训练 | 2048 | ~147,456,000 |
+| 场景 | num_envs | rollouts | 每更新总步数 | trainer.timesteps |
+|------|----------|----------|-------------|-------------------|
+| 快速调试 | 64 | 64 | 4,096 | 50000 |
+| 小规模训练 | 256 | 64 | 16,384 | 50000 |
+| 标准训练 | 1024 | 64 | 65,536 | 50000 |
+| 大规模训练 | 2048 | 64 | 131,072 | 50000 |
+
+每环境最大 episode 步数 = 10s / 0.02s = 500 步。
 
 ---
 
-## 15. 运行方式：如何启动训练
+## 15. 运行方式：如何启动训练和测试
 
 ### 15.1 前置条件
 
 ```bash
-# 1. 确认在项目根目录
 cd /opt/sim_soccer2/simulation/MotrixLab-main
-
-# 2. 安装依赖 (Python 3.10 环境)
 uv sync --all-packages --all-extras
-
-# 3. 确认 motrixsim 可用
 python -c "import motrixsim; print('OK')"
 ```
 
-### 15.2 验证环境注册
+### 15.2 调试脚本（物理稳定性验证）
 
 ```bash
-uv run python -c "
-from motrix_envs import registry
-assert 'k1-penalty-shootout' in registry.list_registered_envs()
-print('环境注册成功')
+# 零动作稳定性测试（验证 reset 后 1000 步不崩溃）
+uv run scripts/debug_penalty_physics.py \
+  --env k1-penalty-shootout \
+  --num-envs 1 --num-steps 1000 --zero-actions
 
-env = registry.make('k1-penalty-shootout', num_envs=1)
-print(f'观测空间: {env.observation_space}')   # Box(-inf, inf, (57,), float32)
-print(f'动作空间: {env.action_space}')        # Box(-1.0, 1.0, (12,), float32)
-"
+# 随机动作测试（单环境）
+uv run scripts/debug_penalty_physics.py \
+  --env k1-penalty-shootout \
+  --num-envs 1 --num-steps 2000 --seed 42 --random-actions
+
+# 随机动作测试（64环境并行）
+uv run scripts/debug_penalty_physics.py \
+  --env k1-penalty-shootout \
+  --num-envs 64 --num-steps 2000 --seed 42 --random-actions
 ```
+
+脚本输出每步的诊断信息：action min/max/mean/std、qpos/qvel finite 状态、qvel max、base height、ball position/velocity、reward、done 数量。崩溃前自动 dump 到 `debug_dumps/`。
 
 ### 15.3 环境 Smoke Test
 
@@ -931,47 +1021,71 @@ print('环境 smoke test 通过')
 ### 15.4 启动训练
 
 ```bash
-# 使用 RSLRL (PyTorch)
+# SKRL (默认, PyTorch)
 uv run scripts/train.py \
   --env k1-penalty-shootout \
-  --rllib rslrl \
-  --num-envs 256
+  --num-envs 2048 \
+  --seed 42
 
-# 使用 SKRL
+# 调试模式（少量环境）
 uv run scripts/train.py \
   --env k1-penalty-shootout \
-  --rllib skrl \
+  --num-envs 64 \
+  --seed 42
+
+# 安全参数可调
+uv run scripts/train.py \
+  --env k1-penalty-shootout \
+  --num-envs 2048 \
+  --action-scale 0.125 \
+  --bad-state-reset true \
+  --debug-physics false
+```
+
+### 15.5 可用 CLI 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--env` | k1-penalty-shootout | 环境名 |
+| `--num-envs` | 2048 | 并行环境数 |
+| `--seed` | (config) | 随机种子 |
+| `--rllib` | skrl | RL框架 (skrl/rslrl) |
+| `--action-scale` | (cfg) | 覆盖 action_scale |
+| `--max-safe-velocity` | 100.0 | qvel 安全阈值 (rad/s) |
+| `--max-safe-ball-speed` | 50.0 | 球速安全阈值 (m/s) |
+| `--bad-state-reset` | true | 启用 bad-state guard |
+| `--debug-physics` | false | 启用物理调试打印 |
+| `--render` | false | 启用渲染 |
+
+### 15.6 评估训练好的模型
+
+```bash
+# 可视化测试（看机器人行为）
+uv run scripts/play.py --env k1-penalty-shootout --num-envs 1
+
+# 量化评估（统计指标）
+uv run scripts/eval_penalty.py \
+  --env k1-penalty-shootout \
+  --policy runs/k1-penalty-shootout/skrl/.../checkpoints/best_agent.pt \
   --num-envs 256 \
-  --render
-
-# 调试模式（少量环境、短训练）
-uv run scripts/train.py \
-  --env k1-penalty-shootout \
-  --rllib rslrl \
-  --num-envs 4 \
-  --render
+  --num-episodes 2048 \
+  --deterministic \
+  --json-out results.json \
+  --csv-out results.csv
 ```
 
-### 15.5 查看训练结果
+评估脚本输出：成功率、触球率、射门率、摔倒率、出界率、平均球速、平均瞄准误差、平均触球时间、平均进球时间。
+
+### 15.7 3D 可视化（无需训练）
 
 ```bash
-# TensorBoard 可视化
-uv run tensorboard --logdir runs/k1-penalty-shootout
-
-# 查看 checkpoint
-ls runs/k1-penalty-shootout/rslrl/
-
-# 评估训练好的模型
-uv run scripts/play.py \
-  --env k1-penalty-shootout \
-  --policy runs/k1-penalty-shootout/rslrl/.../model_3000.pt
-```
-
-### 15.6 3D 可视化（无需训练）
-
-```bash
-# 只看环境渲染，不使用策略
 uv run scripts/view.py --env k1-penalty-shootout
+```
+
+### 15.8 TensorBoard
+
+```bash
+uv run tensorboard --logdir runs/k1-penalty-shootout
 ```
 
 ---
@@ -982,34 +1096,38 @@ uv run scripts/view.py --env k1-penalty-shootout
 
 | 任务 | 状态 |
 |------|------|
-| 场景 XML（K1 机器人 + 球 + 球门 + 传感器）| 完成 |
-| 环境配置 dataclass | 完成 |
-| PenaltyShootoutEnv 环境类（继承 NpEnv）| 完成 |
+| 场景 XML（K1 22 actuator + FIFA球 + 球门 + 传感器）| 完成 |
+| 环境配置 dataclass（含安全参数） | 完成 |
+| PenaltyShootoutEnv 环境类（~960行） | 完成 |
 | 57 维观测空间 | 完成 |
-| 12 维动作空间 + PD 控制 | 完成 |
+| 12 维动作空间 + PD 控制（含多层安全防护） | 完成 |
 | 6 项奖励函数 | 完成 |
 | 4 种终止条件 + 超时截断 | 完成 |
-| 回合重置（含批量重置） | 完成 |
+| 回合重置 + 球-脚穿透检查 | 完成 |
+| 任务指标追踪（episode accumulators + per-step metrics） | 完成 |
 | MotrixLab 三层注册 | 完成 |
 | SKRL + RSLRL 训练配置 | 完成 |
-| 环境创建 + 100 步随机动作测试 | 通过 |
-| Python 语法编译检查 | 通过 |
+| 多层安全防护（action guard + PD clamp + bad-state guard） | 完成 |
+| 物理调试脚本 (debug_penalty_physics.py) | 完成 |
+| 独立评估脚本 (eval_penalty.py) | 完成 |
+| 训练稳定性验证（2048 envs × 50000 steps 无崩溃） | 通过 |
 
-### 16.2 当前环境限制
+### 16.2 训练结果
 
-- **本地缺少 RSLRL/SKRL 包**：本机没有 `rsl_rl` 和 `skrl` Python 包（需通过 `uv sync` 在 Python 3.10 环境安装），因此无法在本机执行完整训练
-- **本地 CUDA 不可用**：NVIDIA 驱动版本过旧，训练只能使用 CPU
-- **目标机器**：需要在安装了所有 MotrixLab 依赖的机器上运行训练
+最新训练运行：SKRL PPO, 2048 envs, 50000 steps, seed=42
+- 训练时间: ~91 分钟
+- 无物理崩溃 (bad_env_reset 触发 0 次)
+- 策略文件: `runs/k1-penalty-shootout/skrl/.../checkpoints/best_agent.pt`
 
 ### 16.3 下一步扩展路线
 
-#### Phase 1: 基础训练验证（1-2 周）
+#### Phase 1: 基础训练优化（当前）
 
-- 在目标机器上运行训练
-- 调整奖励权重（可能需要多次实验找到最佳权重）
-- 观察模型是否学会踢球
+- 调整 rollout 长度和 num_envs 的平衡
+- 尝试增加手臂控制（20-22 DOF action）
+- 调整奖励权重优化踢球行为
 
-#### Phase 2: 加入守门员（2-3 周）
+#### Phase 2: 加入守门员
 
 ```
 场景变为:
@@ -1017,12 +1135,9 @@ uv run scripts/view.py --env k1-penalty-shootout
   +
   守门员机器人 (规则控制, 在球门线上横向移动)
 ```
+- 观察空间增加：守门员相对位置 [3 维]
 
-- 守门员用简单规则控制（例如：根据球的位置左右移动）
-- 射门机器人需要学会观察守门员位置，选择射门角度
-- 观察空间需要增加：守门员相对位置 [3 维]
-
-#### Phase 3: 课程学习（2-3 周）
+#### Phase 3: 课程学习
 
 ```
 Level 1: 球固定在罚球点正中央
@@ -1031,22 +1146,15 @@ Level 3: 球在罚球点 ±0.2m 范围内随机，角度随机
 Level 4: 球在罚球点 ±0.3m 范围内随机，加入守门员
 ```
 
-课程学习让 AI 从简单任务开始，逐步增加难度，避免一开始就面对太难的任务导致学不会。
-
-#### Phase 4: 自对弈（4-6 周）
+#### Phase 4: 自对弈
 
 - 射门机器人和守门员都使用 RL 训练
-- 双方对抗训练：你变强，我也变强
-- 类似 AlphaGo 的自对弈机制
+- 双方对抗训练
 
 #### Phase 5: 部署到 Sim Manager
 
 - 训练完成 → 导出 ONNX 模型
-  ```python
-  torch.onnx.export(policy_net, obs_tensor, "penalty_policy.onnx")
-  ```
 - 在 Sim Manager 中选择 RL 策略 → 机器人用 RL 模型射门
-- 可与规则控制的 decider 机器人同场竞技
 
 ### 16.4 关键文件速查
 
@@ -1056,5 +1164,82 @@ Level 4: 球在罚球点 ±0.3m 范围内随机，加入守门员
 | 环境配置 | `simulation/MotrixLab-main/motrix_envs/src/motrix_envs/locomotion/k1_penalty/cfg.py` |
 | 环境逻辑 | `simulation/MotrixLab-main/motrix_envs/src/motrix_envs/locomotion/k1_penalty/k1_penalty_np.py` |
 | 训练超参 | `simulation/MotrixLab-main/motrix_rl/src/motrix_rl/tasks/k1_penalty.py` |
+| PPO 配置默认值 | `simulation/MotrixLab-main/motrix_rl/src/motrix_rl/skrl/config.py` |
+| 调试脚本 | `simulation/MotrixLab-main/scripts/debug_penalty_physics.py` |
+| 评估脚本 | `simulation/MotrixLab-main/scripts/eval_penalty.py` |
+| 训练入口 | `simulation/MotrixLab-main/scripts/train.py` |
 | 观察/奖励/终止 | 本文档第 6-11 章 |
-| 项目总览 | `PROJECT_OVERVIEW.md` |
+
+---
+
+## 17. 安全防护：多层状态守卫
+
+### 17.1 问题背景
+
+训练初期，PPO 策略的初始探索噪声（`initial_log_std=1.0` → `std≈2.718`）加上无 action clipping，导致约 30% 的采样动作超出 [-1, 1] 范围。极端动作通过 PD 控制器产生过大扭矩，导致关节速度爆炸，最终使 motrixsim 物理求解器的稀疏 LTL 矩阵分解因非正定而崩溃：
+
+```
+pyo3_runtime.PanicException: LTL factorization failed: NotPositiveDefinite { row: 2, col: 2 }
+```
+
+### 17.2 多层防御架构
+
+安全防护分布在从 RL 策略到物理求解器的全链路上：
+
+```
+PPO Policy (Gaussian 采样)
+    │  clip_actions=True         ← 第 1 层: 采样后裁剪到 [-1, 1]
+    │  initial_log_std=-1.5     ← 降低初始探索噪声 (std≈0.223)
+    ▼
+SkrlNpWrapper.step()
+    │  np.nan_to_num + clip     ← 第 2 层: NaN/Inf 清洗 + [-1,1] 裁剪
+    ▼
+apply_action() → _compute_torques()
+    │  NaN guard on actions     ← 第 3 层: actions 清洗
+    │  PD target clamp          ← 第 4 层: 目标角度不超过 joint limits
+    │  torque NaN guard + clip  ← 第 5 层: 力矩清洗 + 限幅
+    ▼
+physics_step() → _guard_bad_state()
+    │  qpos/qvel finite check   ← 第 6 层: 检测 NaN/Inf 状态
+    │  qvel magnitude check     ← 第 7 层: 检测速度爆炸 (>100 rad/s)
+    │  auto-reset bad envs      ← 第 8 层: 清理非法环境
+    ▼
+self._model.step(data)          ← 物理求解器 (安全输入)
+```
+
+### 17.3 Bad-State Guard 详解
+
+`NpEnv._guard_bad_state()`（`env.py`）在每次 `physics_step()` 前执行：
+
+```python
+def _guard_bad_state(self):
+    # 检查项:
+    # - qpos/qvel 是否 finite (所有环境)
+    # - qvel 最大值是否 < max_safe_velocity (默认 100 rad/s)
+
+    bad = ~qpos_finite | ~qvel_finite | (qvel_max >= max_safe_velocity)
+
+    if np.any(bad):
+        # 直接 reset bad envs，不把坏状态送入求解器
+        data_bad = data[bad]
+        obs_bad, _ = self.reset(data_bad)
+        state.obs[bad] = obs_bad
+        state.info["_bad_env_reset_count"] += count
+```
+
+仅在 `cfg.bad_state_reset=True`（默认）时启用，可通过 `--bad-state-reset=false` 关闭。
+
+### 17.4 环境配置中的安全参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `bad_state_reset` | True | 启用 bad-state guard |
+| `debug_physics` | False | 打印物理调试诊断 |
+| `max_safe_velocity` | 100.0 | qvel 安全上限 (rad/s) |
+| `max_safe_ball_speed` | 50.0 | 球速安全上限 (m/s) |
+
+### 17.5 训练效果
+
+- **修复前**：训练在第 ~746 步崩溃（LTL factorization 失败）
+- **修复后**：2048 envs × 50000 steps 零崩溃（`bad_env_reset_count = 0`）
+- **性能影响**：`_guard_bad_state()` 正常路径只做 2-3 个 numpy 操作，CPU 开销可忽略

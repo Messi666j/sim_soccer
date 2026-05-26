@@ -43,9 +43,9 @@ class SkrlPolicyCfg:
     """
 
     class_name: str = "GaussianMixin"
-    clip_actions: bool = False
+    clip_actions: bool = True
     clip_log_std: bool = True
-    initial_log_std: float = 1.0
+    initial_log_std: float = -1.5
     min_log_std: float = -20.0
     max_log_std: float = 2.0
     reduction: str = "sum"

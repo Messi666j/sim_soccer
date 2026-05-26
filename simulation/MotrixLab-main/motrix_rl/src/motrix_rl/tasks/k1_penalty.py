@@ -37,12 +37,15 @@ class skrl:
             trainer = runner.trainer
 
             models.policy.hiddens = [512, 256, 128]
+            models.policy.clip_actions = True
+            models.policy.initial_log_std = -1.5
             models.value.hiddens = [512, 256, 128]
 
-            agent.rollouts = 24
+            agent.rollouts = 64
             agent.learning_epochs = 5
             agent.mini_batches = 4
             agent.learning_rate = 3e-4
+            agent.learning_rate_scheduler = ""  # Disable KLAdaptiveLR (incompatible with PyTorch 2.7)
 
             trainer.timesteps = 50000
 
